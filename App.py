@@ -11,6 +11,6 @@ tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 if st.button("Analyze"):
     if tickers:
         df = stock_df(tickers)
-        st.dataframe(df.style.format(precision=2))
+        st.dataframe(df.style.format(precision=2), use_container_width=True)
     else:
         st.warning("Please enter at least one ticker.")
