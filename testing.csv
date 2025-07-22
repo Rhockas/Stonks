@@ -1,0 +1,7 @@
+,Ticker,Short Name,Price,PE,PEG,EPS TTM,Earnings Growth,Revenue Growth,ROE,ROA,Debt/Equity,P/B,FCF,Dividend Yield %,Sector,Peter Lynch,Warren Buffett,Philip Fisher,Magic Formula,Benjamin Graham,Seth Klarman,Personal Model
+0,GOOGL,Alphabet Inc.,190.1,21.24,1.42,8.95,0.46,0.12,0.35,0.17,0.08,6.69,60679000064,0.54,Communication Services,1.41,100%,100%,50%,60%,66%,100%
+1,ASML,ASML Holding N.V. - New York Re,719.68,25.7,1.47,28.0,0.45,0.23,0.58,0.16,0.21,15.86,8555400192,0.46,Technology,1.36,100%,100%,50%,60%,66%,100%
+2,TSLA,"Tesla, Inc.",328.49,188.79,5.74,1.74,-0.71,-0.09,0.09,0.04,0.17,14.17,3360000000,0.0,Consumer Cyclical,0.35,20%,0%,0%,20%,66%,40%
+3,MSFT,Microsoft Corporation,510.06,39.36,2.39,12.96,0.18,0.13,0.34,0.15,0.33,11.78,54817001472,0.64,Technology,0.84,70%,100%,50%,60%,66%,100%
+4,AMZN,"Amazon.com, Inc.",229.3,37.28,2.98,6.15,0.64,0.09,0.25,0.08,0.52,7.96,39273500672,0.0,Consumer Cyclical,0.67,70%,65%,0%,40%,33%,90%
+5,AAPL,Apple Inc.,212.48,33.1,1.98,6.42,0.05,0.05,1.38,0.24,1.47,47.52,97251500032,0.47,Technology,1.01,50%,30%,50%,40%,33%,80%
