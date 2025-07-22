@@ -3,7 +3,7 @@ import pandas as pd
 from Stocks import stock_df  # assuming stock_df(tickers: list) already defined
 
 st.title("Stock Analysis App")
-
+st.set_page_config(layout="wide")
 # Input tickers
 tickers_input = st.text_input("Enter tickers (comma-separated):", "GOOGL, ASML, TSLA")
 tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
