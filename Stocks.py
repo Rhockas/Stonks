@@ -409,7 +409,7 @@ def stock_df(tickers: list):
             "Debt/Equity": data["debt_to_equity"],
             "P/B": data["pb_ratio"],
             "FCF": data["free_cash_flow"],
-            "Dividend Yield %": data["dividend_yield%"]*100,
+            "Dividend Yield %": data["dividend_yield%"] * 100,
             "Sector": data["sector"]
         }
 
@@ -424,17 +424,42 @@ def stock_df(tickers: list):
         row["Benjamin Graham"] = clean(benjamin_graham(ticker))
         row["Seth Klarman"] = clean(seth_klarman(ticker))
         row["Personal Model"] = clean(personal_model(ticker))
-        # Personal Model
-        # pm_lines = personal_model(ticker).splitlines()
-        # if len(pm_lines) >= 2:
-        #     row["Personal Model"] = ' | '.join(pm_lines[1:]).replace('\n', ' ')
-        # else:
-        #     row["Personal Model"] = "N/A"
 
         rows.append(row)
 
     df = pd.DataFrame(rows)
+
+    # convert Peter Lynch column to float
+    PL = df["Peter Lynch"].astype(float)
+
+    # calculate PL_Score for each row
+    PL_Score = []
+    for val in PL:
+        if 0 < val < 0.50:
+            PL_Score.append(0)
+        elif 0.50 <= val < 1.00:
+            PL_Score.append(20)
+        elif 1.00 <= val < 1.50:
+            PL_Score.append(50)
+        elif 1.50 <= val < 2.00:
+            PL_Score.append(75)
+        elif 2.00 <= val < 2.50:
+            PL_Score.append(100)
+        elif val >= 2.50:
+            PL_Score.append(100)
+        else:
+            PL_Score.append(0)
+
+    # attach PL_Score column to DataFrame
+
+    # last 6 columns (method outputs)
+    df_last6 = df.iloc[:, -6:].replace("%", "", regex=True).astype(float)
+
+    avg_score = df_last6.mean(axis=1)
+    avg_score = ((avg_score * 6) + PL_Score) / 7
+    df["Final Score"] = avg_score.round(2).astype(str) + "%"
     df = df.round(2)
+
     return df
 
 
