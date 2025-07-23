@@ -36,7 +36,7 @@ if st.button("Analyze"):
         styled_df = df.style.format(precision=2)
 
         if "Final Score" in df.columns:
-            styled_df = styled_df.applymap(color_final_score, subset=["Final Score"])
+            styled_df = styled_df.map(color_final_score, subset=["Final Score"])
 
         st.dataframe(styled_df, use_container_width=True)
     else:
