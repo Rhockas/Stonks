@@ -42,7 +42,11 @@ def stock_data(ticker):
     days_elapsed = (today - start_of_year).days
     n_years = 3 + days_elapsed / 365.25
 
-    ebit_ttm = q_fin.loc["EBIT"].iloc[:4].sum()
+    if "EBIT" in q_fin.index:
+        ebit_ttm = q_fin.loc["EBIT"].iloc[:4].sum()
+    else:
+        ebit_ttm = None
+
     invested_capital = q_bs.loc["Invested Capital"].iloc[0]
 
     data = {
