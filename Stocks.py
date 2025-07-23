@@ -24,43 +24,74 @@ def stock_data(ticker):
     stock = yf.Ticker(ticker)
     info = stock.info
     
+    fin = stock.financials
+    q_fin = stock.quarterly_financials
+    q_bs = stock.quarterly_balance_sheet
+
+
+    rev_annual = fin.loc["Total Revenue"]
+    rev_annual = rev_annual.sort_index(ascending=True)
+
+    latest_rev = rev_annual.iloc[-1]
+    y3to4_years_ago_rev = rev_annual.iloc[-4]
+
+    growth_3to4y = ((latest_rev / y3to4_years_ago_rev) - 1) * 100
+
+    today = pd.Timestamp.today()
+    start_of_year = pd.Timestamp(year=today.year, month=1, day=1)
+    days_elapsed = (today - start_of_year).days
+    n_years = 3 + days_elapsed / 365.25
+
+    ebit_ttm = q_fin.loc["EBIT"].iloc[:4].sum()
+    invested_capital = q_bs.loc["Invested Capital"].iloc[0]
+
     data = {
         'short_name': info.get('shortName'),
         'ticker': ticker.upper(),
         'price': info.get('currentPrice'),
-        'pe_ratio': (info.get('trailingPE')or 1),
-        'peg_ratio': (info.get("trailingPegRatio") or 1),
+        'pe_ratio': info.get('trailingPE'),
+        'peg_ratio': info.get("trailingPegRatio"),
         'eps_ttm': info.get('trailingEps'),
+        'Total Revenue': info.get('totalRevenue'),
         'growth': 0,
         'growth_with_divs': 0,
         'EPS growth': 0,
+        '3-4 Year Sales Growth': float(growth_3to4y),
+        'CAGR': float(((latest_rev / y3to4_years_ago_rev) ** (1/n_years) - 1) * 100),
+        'EBIT': float(ebit_ttm),
+        'Enterprise Value': info.get("enterpriseValue"),
+        'Invested Capital': float(invested_capital),
+        "ROIC": (float(ebit_ttm/invested_capital)) if ebit_ttm is not None and invested_capital is not None else "N/A",
         'dividendYield': info.get("dividendYield"),
-        'dividend_yield%': (info.get("trailingAnnualDividendYield") or 0.0),
-        'earnings_growth': (info.get('earningsQuarterlyGrowth') or 0.0),
-        'roe': (info.get('returnOnEquity') or 0.0),
+        'dividend_yield%': info.get("trailingAnnualDividendYield"),
+        'earnings_growth': info.get('earningsQuarterlyGrowth'),
+        'roe': info.get('returnOnEquity'),
         'roa': info.get('returnOnAssets'),
-        'debt_to_equity': (info.get('debtToEquity') or 0.0) * 0.01,
+        'debt_to_equity': info.get('debtToEquity') * 0.01,
         'pb_ratio': info.get('priceToBook'),
-        'free_cash_flow': (info.get('freeCashflow') or 0.0),
+        'free_cash_flow': info.get('freeCashflow'),
         'market_cap': info.get('marketCap'),
         'rev_growth': info.get("revenueGrowth"),
         'sector': info.get('sector')
     }
-    if data["peg_ratio"] and data["peg_ratio"] > 0:
+    if data["peg_ratio"] and data["peg_ratio"] > 0 and data["pe_ratio"]:
         data["growth"] = data["pe_ratio"] / data["peg_ratio"]
     else:
         data["growth"] = 0
-    
     return data
-
-
-# %%
 stock_data("GOOGL")
 
 # %%
 def peter_lynch(ticker):
     data = stock_data(ticker)
-    score = ((data["growth"]*2) + data["dividend_yield%"]) / data["pe_ratio"]
+
+    growth = data.get("growth")
+    dividend_yield = data.get("dividend_yield%") or 0
+    pe_ratio = data.get("pe_ratio")
+
+    score = ((growth*2 + dividend_yield)/pe_ratio) if growth is not None and pe_ratio is not None else 0
+    #score = ((data["growth"]*2) + data["dividend_yield%"]) / data["pe_ratio"]
+
     eval = ""
     result = []
     result.append(f"{score:.2f}")
@@ -84,28 +115,38 @@ def warren_buffett(ticker):
     de = data["debt_to_equity"]
     pe = data["pe_ratio"]
     earn = data["earnings_growth"]
-    verdict = "PASSED✅" if (roe >= 0.12) and (de <= 1.0) and (pe > 0 and pe < 30) and (earn > 0) else "DID NOT PASS❌"
+    verdict = (
+    "PASSED✅"
+    if (
+        roe is not None and roe >= 0.12
+        and de is not None and de <= 1.0
+        and pe is not None and 0 < pe < 30
+        and earn is not None and earn > 0
+    )
+    else "DID NOT PASS❌"
+)
+
     result = []
     score = 0
-    if roe >= 0.12:
+    if roe is not None and roe >= 0.12:
         result.append("ROE: Good✅\n")
         score += 30
     else:
         result.append("ROE: Weak❌")
 
-    if de <= 1.0:
+    if de is not None and de <= 1.0:
         result.append("Debt: Low✅")
         score += 20
     else:
         result.append("Debt: High❌")
 
-    if 0 < pe < 30:
+    if pe is not None and 0 < pe < 30:
         result.append("PE: Fair✅")
         score += 30
     else:
         result.append("PE: High❌")
 
-    if earn > 0:
+    if earn is not None and earn > 0:
         result.append("Growth: Positive✅")
         score +=20
     else:
@@ -116,7 +157,7 @@ def warren_buffett(ticker):
 
     return f"\nWarren Buffett: {verdict} | {' | '.join(result)}"
 
-warren_buffett("GOOGL")
+warren_buffett("TSLA")
 
 # %%
 def philip_fisher(ticker):
@@ -126,25 +167,25 @@ def philip_fisher(ticker):
     roe = data["roe"]
     score = 0
 
-    if (earn_growth >= 0.1) and (rev_growth > 0.1) and (roe > 0.12):
+    if (earn_growth is not None and earn_growth >= 0.1) and (rev_growth is not None and rev_growth > 0.1) and (roe is not None and roe > 0.15):
         verdict = "PASSED✅"
     else:
         verdict = "DID NOT PASS❌"
 
     details = []
-    if earn_growth >= 0.1:
+    if earn_growth is not None and earn_growth >= 0.1:
         details.append("Earnings Growth: Good✅")
         score += 35
     else:
         details.append("Earnings Growth: Weak❌")
 
-    if rev_growth > 0.1:
+    if rev_growth is not None and rev_growth > 0.1:
         details.append("Sales Growth: Good✅")
         score += 35
     else:
         details.append("Sales Growth: Weak❌")
 
-    if roe > 0.12:
+    if roe is not None and roe > 0.15:
         details.append("ROE: Strong✅")
         score +=30
     else:
@@ -156,33 +197,38 @@ def philip_fisher(ticker):
     return f"{score}%"
     return result
 
-philip_fisher("GOOGL")
+philip_fisher("AMZN")
 
 # %%
 def magic_formula(ticker):
     data = stock_data(ticker)
-    earn_yield = data["eps_ttm"] / data["price"]
-    roa = data["roa"]
-    earn_yield_gap = int((earn_yield / 0.1 - 1) * 100)
-    roa_gap = int((roa / 0.2 - 1) * 100)
+
+    ebit_ttm = data.get("ebit_ttm")
+    ev = data.get("enterprise_value")
+    invested_capital = data.get("invested_capital")
+
+    earn_yield = (ebit_ttm / ev) if ebit_ttm is not None and ev not in (None, 0) else None
+    roic = data.get("ROIC")
+
     score = 0
-    if (earn_yield > 0.07) and (roa > 0.1):
+
+    if (earn_yield is not None and earn_yield > 0.07) and (roic is not None and roic > 0.1):
         verdict = "PASSED✅"
     else:
         verdict = "DID NOT PASS❌"
 
     details = []
-    if earn_yield > 0.07:
+    if earn_yield is not None and earn_yield > 0.07:
         details.append(f"Earnings Yield: Good✅ ({earn_yield:.3f})")
         score += 50
     else:
-        details.append(f"Earnings Yield: Weak❌ ({earn_yield:.3f})")
+        details.append(f"Earnings Yield: Weak❌ ({earn_yield:.3f})" if earn_yield is not None else "Earnings Yield: N/A❌")
 
-    if roa > 0.1:
-        details.append(f"ROA: Strong✅ ({roa:.3f})")
-        score+=50
+    if roic is not None and roic > 0.1:
+        details.append(f"ROIC: Strong✅ ({roic:.3f})")
+        score += 50
     else:
-        details.append(f"ROA: Weak❌ ({roa:.3f})")
+        details.append(f"ROIC: Weak❌ ({roic:.3f})" if roic is not None else "ROIC: N/A❌")
 
     result = f"\nMagic Formula: {verdict} | " + " | ".join(details)
     return f"{score}%"
@@ -196,29 +242,30 @@ def seth_klarman(ticker):
     free_cash_flow = data["free_cash_flow"]
     de = data["debt_to_equity"]
     score = 0
-    if (pb <= 2) and (free_cash_flow > 0) and (de <= 0.5):
+    
+    if (pb is not None and pb <= 2) and (free_cash_flow is not None and free_cash_flow > 0) and (de is not None and de <= 0.5):
         verdict = "PASSED ✅"
     else:
         verdict = "DID NOT PASS ❌"
 
     details = []
-    if pb <= 2:
+    if pb is not None and pb <= 2:
         details.append(f"P/B: Low✅ ({pb:.2f})")
         score += 34
     else:
-        details.append(f"P/B: High❌ ({pb:.2f})")
+        details.append(f"P/B: High❌ ({pb:.2f})" if pb is not None else "P/B: N/A❌")
 
-    if free_cash_flow > 0:
+    if free_cash_flow is not None and free_cash_flow > 0:
         details.append(f"FCF: Positive✅ ({free_cash_flow:.0f})")
         score += 33
     else:
-        details.append(f"FCF: Negative❌ ({free_cash_flow:.0f})")
+        details.append(f"FCF: Negative❌ ({free_cash_flow:.0f})" if free_cash_flow is not None else "FCF: N/A❌")
 
-    if de <= 0.5:
+    if de is not None and de <= 0.5:
         details.append(f"Debt/Equity: Low✅ ({de:.2f})")
         score += 33
     else:
-        details.append(f"Debt/Equity: High❌ ({de:.2f})")
+        details.append(f"Debt/Equity: High❌ ({de:.2f})" if de is not None else "Debt/Equity: N/A❌")
 
     result = f"\nSeth Klarman: {verdict} | " + " | ".join(details)
     return f"{score}%"
@@ -236,11 +283,11 @@ def benjamin_graham(ticker):
     earn_growth = data["earnings_growth"]
     score = 0
     if (
-        (pe <= 20.0)
-        and (pb <= 3.0)
-        and (de <= 1.0)
-        and (div_yield > 0)
-        and (earn_growth > 0)
+        (pe is not None and pe <= 20.0)
+        and (pb is not None and pb <= 3.0)
+        and (de is not None and pb <= 1.0)
+        and (div_yield is not None and div_yield > 0)
+        and (earn_growth is not None and earn_growth > 0)
     ):
         verdict = "PASSED ✅"
     else:
@@ -248,35 +295,35 @@ def benjamin_graham(ticker):
 
     details = []
 
-    if pe <= 20.0:
+    if pe is not None and pe <= 20.0:
         details.append(f"P/E: Good✅ ({pe:.2f})")
         score += 20
     else:
-        details.append(f"P/E: High❌ ({pe:.2f})")
+        details.append(f"P/E: High❌ ({pe:.2f})" if pe is not None else "P/E: N/A❌")
 
-    if pb <= 3.0:
+    if pb is not None and pb <= 3.0:
         details.append(f"P/B: Good✅ ({pb:.2f})")
         score += 20
     else:
-        details.append(f"P/B: High❌ ({pb:.2f})")
+        details.append(f"P/B: High❌ ({pb:.2f})" if pb is not None else "P/B: N/A❌")
 
-    if de <= 1.0:
+    if de is not None and de <= 1.0:
         details.append(f"D/E: Good✅ ({de:.2f})")
         score += 20
     else:
-        details.append(f"D/E: High❌ ({de:.2f})")
+        details.append(f"D/E: High❌ ({de:.2f})" if de is not None else "D/E: N/A❌")
 
-    if div_yield > 0:
+    if div_yield is not None and div_yield > 0:
         details.append(f"Dividend: Present✅ ({div_yield:.2f}%)")
         score += 20
     else:
-        details.append(f"Dividend: None❌ ({div_yield:.2f}%)")
+        details.append(f"Dividend: None❌ ({div_yield:.2f}%)" if div_yield is not None else "Dividend: N/A❌")
 
-    if earn_growth > 0:
+    if earn_growth is not None and earn_growth > 0:
         details.append(f"Earnings Growth: Positive✅ ({earn_growth:.2f})")
         score += 20
     else:
-        details.append(f"Earnings Growth: Negative❌ ({earn_growth:.2f})")
+        details.append(f"Earnings Growth: Negative❌ ({earn_growth:.2f})" if earn_growth is not None else "Earnings Growth: N/A❌")
 
     result = f"\nBenjamin Graham: {verdict} | " + " | ".join(details)
     return f"{score}%"
@@ -296,52 +343,58 @@ def personal_model(ticker):
     peg = data["peg_ratio"]
     de = data["debt_to_equity"]
     fcf = data["free_cash_flow"]
+    roic = data["ROIC"]
     details = []
     score = 0
 
-    if roe >= 0.10:
-        score += 10
+    if roe is not None and roe >= 0.14:
+        score += 12.5
         details.append(f"ROE: {roe:.2f} ✅")
     else:
-        details.append(f"ROE: {roe:.2f} ❌")
-    if roa >= 0.05:
-        score += 10
-        details.append(f"ROA: {roa:.2f} ✅")
-    else:
-        details.append(f"ROA: {roa:.2f} ❌")
+        details.append(f"ROE: {roe:.2f} ❌" if roe is not None else "ROE: N/A ❌")
 
-    if earnings_growth >= 0.12:
-        score += 20
+    if roic is not None and roic >= 0.10:
+        score += 12.5
+        details.append(f"ROA: {roic:.2f} ✅")
+    else:
+        details.append(f"ROA: {roic:.2f} ❌" if roic is not None else "ROA: N/A ❌")
+
+    if earnings_growth is not None and earnings_growth >= 0.12:
+        score += 12.5
         details.append(f"Earnings Growth: {earnings_growth:.2f} ✅")
     else:
-        details.append(f"Earnings Growth: {earnings_growth:.2f} ❌")
-    if revenue_growth >= 0.10:
-        score += 20
+        details.append(f"Earnings Growth: {earnings_growth:.2f} ❌" if earnings_growth is not None else "Earnings Growth: N/A ❌")
+
+    if revenue_growth is not None and revenue_growth >= 0.10:
+        score += 12.5
         details.append(f"Revenue Growth: {revenue_growth:.2f} ✅")
     else:
-        details.append(f"Revenue Growth: {revenue_growth:.2f} ❌")
+        details.append(f"Revenue Growth: {revenue_growth:.2f} ❌" if revenue_growth is not None else "Revenue Growth: N/A ❌")
 
-    if pe <= 40:
-        score += 10
+    if pe is not None and pe <= 40:
+        score += 12.5
         details.append(f"P/E: {pe:.2f} ✅")
     else:
-        details.append(f"P/E: {pe:.2f} ❌")
-    if peg < 2.5:
-        score += 10
+        details.append(f"P/E: {pe:.2f} ❌" if pe is not None else "P/E: N/A ❌")
+
+    if peg is not None and peg < 2.5:
+        score += 12.5
         details.append(f"PEG: {peg:.2f} ✅")
     else:
-        details.append(f"PEG: {peg:.2f} ❌")
+        details.append(f"PEG: {peg:.2f} ❌" if peg is not None else "PEG: N/A ❌")
 
-    if de <= 1.5:
-        score += 10
+    if de is not None and de <= 0.5:
+        score += 12.5
         details.append(f"D/E: {de:.2f} ✅")
     else:
-        details.append(f"D/E: {de:.2f} ❌")
-    if fcf > 0:
-        score += 10
+        details.append(f"D/E: {de:.2f} ❌" if de is not None else "D/E: N/A ❌")
+
+    if fcf is not None and fcf > 0:
+        score += 12.5
         details.append(f"FCF: {fcf:.0f} ✅")
     else:
-        details.append(f"FCF: {fcf:.0f} ❌")
+        details.append(f"FCF: {fcf:.0f} ❌" if fcf is not None else "FCF: N/A ❌")
+        
     return f"{score}%"
     return f"\nPersonal Model — Total Score: {score}/100\n" + "\n".join(details)
 
@@ -467,5 +520,26 @@ def stock_df(tickers: list):
 pd.options.display.max_columns = None
 df = stock_df(["GOOGL", "ASML", "TSLA", "MSFT", "AMZN", "AAPL"])
 df.head()
+
+# %%
+import yfinance as yf
+
+# Download S&P 500 tickers from Wikipedia table
+import pandas as pd
+
+url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+sp500_table = pd.read_html(url)[0]
+
+# Get tickers column
+tickers = sp500_table['Symbol'].tolist()
+
+# Take top 100
+top_100 = tickers[:100]
+
+# Format as a single string
+formatted = ", ".join(top_100)
+
+print(formatted)
+
 
 
