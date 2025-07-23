@@ -62,7 +62,7 @@ def stock_data(ticker):
         'EPS growth': 0,
         '3-4 Year Sales Growth': float(growth_3to4y),
         'CAGR': float(((latest_rev / y3to4_years_ago_rev) ** (1/n_years) - 1) * 100),
-        'EBIT': float(ebit_ttm) if not None else ebit_ttm,
+        'EBIT': float(ebit_ttm) if ebit_ttm is not None else None,
         'Enterprise Value': info.get("enterpriseValue"),
         'Invested Capital': float(invested_capital),
         "ROIC": (float(ebit_ttm/invested_capital)) if ebit_ttm is not None and invested_capital is not None else None,
