@@ -521,25 +521,4 @@ pd.options.display.max_columns = None
 df = stock_df(["GOOGL", "ASML", "TSLA", "MSFT", "AMZN", "AAPL"])
 df.head()
 
-# %%
-import yfinance as yf
-
-# Download S&P 500 tickers from Wikipedia table
-import pandas as pd
-
-url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-sp500_table = pd.read_html(url)[0]
-
-# Get tickers column
-tickers = sp500_table['Symbol'].tolist()
-
-# Take top 100
-top_100 = tickers[:100]
-
-# Format as a single string
-formatted = ", ".join(top_100)
-
-print(formatted)
-
-
 
