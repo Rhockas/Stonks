@@ -82,16 +82,12 @@ if st.button("Analyze"):
         with col1:
             st.subheader("Stock Financial Metrics")
             df_metrics = stock_df(tickers)
-            st.dataframe(df_metrics, use_container_width=True)
+            st.dataframe(df_metrics, use_container_width=True)  # Native sorting enabled
 
         with col2:
             st.subheader("Valuation Models")
             df_methods = method_df(tickers)
-            styled_methods = df_methods.style.format(precision=2)
-
-            if "Final Score" in df_methods.columns:
-                styled_methods = styled_methods.map(color_final_score, subset=["Final Score"])
-
-            st.dataframe(styled_methods, use_container_width=True)
+            st.dataframe(df_methods, use_container_width=True)  # Use raw DataFrame for sortability
     else:
         st.warning("Please enter at least one ticker.")
+
