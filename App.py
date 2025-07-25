@@ -47,6 +47,8 @@
 import streamlit as st
 import pandas as pd
 from Stocks import stock_df, method_df  # Updated functions
+import yfinance as yf
+import matplotlib.pyplot as plt
 
 st.set_page_config(layout="wide")
 st.title("Stock Analysis App")
@@ -55,6 +57,42 @@ st.title("Stock Analysis App")
 tickers_input = st.text_input("Enter tickers (comma-separated):", "AAPL, MSFT, TSLA")
 tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
+
+st.subheader("Stock Price Chart")
+
+# Time period dropdown
+period_map = {
+    "1 Day": "1d",
+    "1 Week": "5d",
+    "1 Month": "1mo",
+    "6 Months": "6mo",
+    "1 Year": "1y"
+}
+selected_period_label = st.selectbox("Select time period:", list(period_map.keys()))
+selected_period = period_map[selected_period_label]
+
+# Load historical data for each ticker
+price_data = {}
+for ticker in tickers:
+    try:
+        df = yf.Ticker(ticker).history(period=selected_period)
+        if not df.empty:
+            price_data[ticker] = df["Close"]
+    except Exception as e:
+        st.warning(f"Couldn't load data for {ticker}: {e}")
+
+# Plot all on one chart using normalized prices
+if price_data:
+    st.markdown("Prices normalized to 100 for comparison.")
+    fig, ax = plt.subplots()
+    for ticker, series in price_data.items():
+        normalized = series / series.iloc[0] * 100
+        ax.plot(normalized, label=ticker)
+    ax.legend()
+    ax.set_ylabel("Normalized Price")
+    st.pyplot(fig)
+else:
+    st.info("No valid price data available to chart.")
 
 def color_final_score(val):
     if isinstance(val, str) and val.endswith('%'):
