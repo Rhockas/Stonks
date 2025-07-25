@@ -54,7 +54,7 @@ st.set_page_config(layout="wide")
 st.title("Stock Analysis App")
 
 # --- Inputs ---
-tickers_input = st.text_input("Enter tickers (comma-separated):", "AAPL, MSFT, TSLA")
+tickers_input = st.text_input("Enter tickers (comma-separated):", "GOOGL, ASML, AAPL, MSFT, TSLA")
 tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 analyze = st.button("🔍 Analyze")
 
