@@ -109,11 +109,12 @@ if selected_tickers:
             y=y_series.values,
             mode='lines',
             name=ticker,
-            hovertemplate=(
+            hovertemplate = (
                 f"{ticker}<br>"
                 "Date: %{x|%Y-%m-%d}<br>"
-                f"{'Norm ' if use_normalized else ''}Price: %{y:.2f}<extra></extra>"
-            )
+                + ("Norm " if use_normalized else "")
+                + "Price: %{y:.2f}<extra></extra>"
+                            )
         ))
 
     # --- Dynamic gridlines ---
