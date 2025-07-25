@@ -96,6 +96,16 @@ if price_data:
                 "Norm Price: %{y:.2f}<extra></extra>"
                         )))
 
+     y_min = min(min(series / series.iloc[0] * 100) for series in price_data.values())
+    y_max = max(max(series / series.iloc[0] * 100) for series in price_data.values())
+
+    y_range = y_max - y_min
+    tick_spacing = max(round(y_range / 10), 1)
+
+    tick_start = int(y_min // tick_spacing * tick_spacing)
+    tick_end = int(y_max // tick_spacing * tick_spacing + tick_spacing)
+    tick_vals = list(range(tick_start, tick_end + 1, tick_spacing))
+
     fig.update_layout(
         height=500,
         margin=dict(t=40, b=40, l=20, r=20),
@@ -103,13 +113,19 @@ if price_data:
         yaxis_title="Normalized Price",
         yaxis=dict(
             gridcolor='lightgray',
-            tickvals=[96, 98, 100, 102, 104, 106],
-            showgrid=True
+            gridwidth=1,
+            tickvals=tick_vals,
+            showgrid=True,
+            griddash='dot',
+            linecolor='rgba(0,0,0,0.2)'
         ),
-        xaxis=dict(tickangle=-90),
+        xaxis=dict(
+            tickangle=-90
+        ),
         hovermode="x unified",
         template="plotly_white"
     )
+    
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.info("No valid price data available to chart.")
