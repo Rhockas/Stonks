@@ -96,7 +96,7 @@ if price_data:
                 "Norm Price: %{y:.2f}<extra></extra>"
                         )))
 
-     y_min = min(min(series / series.iloc[0] * 100) for series in price_data.values())
+    y_min = min(min(series / series.iloc[0] * 100) for series in price_data.values())
     y_max = max(max(series / series.iloc[0] * 100) for series in price_data.values())
 
     y_range = y_max - y_min
@@ -125,7 +125,7 @@ if price_data:
         hovermode="x unified",
         template="plotly_white"
     )
-    
+
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.info("No valid price data available to chart.")
