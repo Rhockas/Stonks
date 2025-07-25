@@ -46,21 +46,21 @@
 
 import streamlit as st
 import pandas as pd
-from Stocks import stock_df, method_df  # Updated functions
+from Stocks import stock_df, method_df
 import yfinance as yf
-import matplotlib.pyplot as plt
+import plotly.graph_objs as go
 
 st.set_page_config(layout="wide")
 st.title("Stock Analysis App")
 
-# User input
+# --- Inputs ---
 tickers_input = st.text_input("Enter tickers (comma-separated):", "AAPL, MSFT, TSLA")
 tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+analyze = st.button("🔍 Analyze")
 
-
+# --- Price Chart ---
 st.subheader("Stock Price Chart")
 
-# Time period dropdown
 period_map = {
     "1 Day": "1d",
     "1 Week": "5d",
@@ -71,7 +71,6 @@ period_map = {
 selected_period_label = st.selectbox("Select time period:", list(period_map.keys()))
 selected_period = period_map[selected_period_label]
 
-# Load historical data for each ticker
 price_data = {}
 for ticker in tickers:
     try:
@@ -81,51 +80,53 @@ for ticker in tickers:
     except Exception as e:
         st.warning(f"Couldn't load data for {ticker}: {e}")
 
-# Plot all on one chart using normalized prices
 if price_data:
     st.markdown("Prices normalized to 100 for comparison.")
-    fig, ax = plt.subplots()
+    fig = go.Figure()
     for ticker, series in price_data.items():
-        normalized = series / series.iloc[0] * 100
-        ax.plot(normalized, label=ticker)
-    ax.legend()
-    ax.set_ylabel("Normalized Price")
-    st.pyplot(fig)
+        norm_series = series / series.iloc[0] * 100
+        fig.add_trace(go.Scatter(
+            x=norm_series.index,
+            y=norm_series.values,
+            mode='lines',
+            name=ticker,
+            hovertemplate=(
+                f"{ticker}<br>"
+                "Date: %{x|%Y-%m-%d}<br>"
+                "Norm Price: %{y:.2f}<extra></extra>"
+                        )))
+
+    fig.update_layout(
+        height=500,
+        margin=dict(t=40, b=40, l=20, r=20),
+        xaxis_title="Date",
+        yaxis_title="Normalized Price",
+        yaxis=dict(
+            gridcolor='lightgray',
+            tickvals=[96, 98, 100, 102, 104, 106],
+            showgrid=True
+        ),
+        xaxis=dict(tickangle=-90),
+        hovermode="x unified",
+        template="plotly_white"
+    )
+    st.plotly_chart(fig, use_container_width=True)
 else:
     st.info("No valid price data available to chart.")
 
-def color_final_score(val):
-    if isinstance(val, str) and val.endswith('%'):
-        try:
-            score = float(val.replace('%', ''))
-            if score < 20:
-                return 'background-color: #8B0000; color: white'
-            elif score < 40:
-                return 'background-color: #FF6347; color: white'
-            elif score < 60:
-                return 'background-color: #FFD700; color: black'
-            elif score < 80:
-                return 'background-color: #9ACD32; color: black'
-            else:
-                return 'background-color: #228B22; color: white'
-        except:
-            return ''
-    return ''
+# --- Analysis Tables ---
+if analyze and tickers:
+    col1, col2 = st.columns(2)
 
+    with col1:
+        st.subheader("Stock Financial Metrics")
+        df_metrics = stock_df(tickers)
+        st.dataframe(df_metrics, use_container_width=True)
 
-if st.button("Analyze"):
-    if tickers:
-        col1, col2 = st.columns(2)
+    with col2:
+        st.subheader("Valuation Models")
+        df_methods = method_df(tickers)
+        st.dataframe(df_methods, use_container_width=True)
 
-        with col1:
-            st.subheader("Stock Financial Metrics")
-            df_metrics = stock_df(tickers)
-            st.dataframe(df_metrics, use_container_width=True)  # Native sorting enabled
-
-        with col2:
-            st.subheader("Valuation Models")
-            df_methods = method_df(tickers)
-            st.dataframe(df_methods, use_container_width=True)  # Use raw DataFrame for sortability
-    else:
-        st.warning("Please enter at least one ticker.")
-
+elif analyze:
+    st.warning("Please enter at least one ticker.")
