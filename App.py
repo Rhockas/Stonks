@@ -58,9 +58,10 @@ tickers_input = st.text_input("Enter tickers (comma-separated):", "AAPL, MSFT, T
 tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 analyze = st.button("🔍 Analyze")
 
-# --- Price Chart ---
+# --- Stock Price Chart ---
 st.subheader("Stock Price Chart")
 
+# --- Period selection ---
 period_map = {
     "1 Day": "1d",
     "1 Week": "5d",
@@ -71,6 +72,10 @@ period_map = {
 selected_period_label = st.selectbox("Select time period:", list(period_map.keys()))
 selected_period = period_map[selected_period_label]
 
+# --- Toggle for raw vs normalized ---
+use_normalized = st.checkbox("Normalize prices (start from 100)", value=True)
+
+# --- Download historical data for each ticker ---
 price_data = {}
 for ticker in tickers:
     try:
@@ -80,28 +85,40 @@ for ticker in tickers:
     except Exception as e:
         st.warning(f"Couldn't load data for {ticker}: {e}")
 
-if price_data:
-    st.markdown("Prices normalized to 100 for comparison.")
+# --- Multiselect filter ---
+available_tickers = list(price_data.keys())
+selected_tickers = st.multiselect(
+    "Select tickers to show in chart:",
+    options=available_tickers,
+    default=available_tickers
+)
+
+# --- Plot chart ---
+if selected_tickers:
     fig = go.Figure()
-    for ticker, series in price_data.items():
-        norm_series = series / series.iloc[0] * 100
+    y_min, y_max = float('inf'), float('-inf')
+
+    for ticker in selected_tickers:
+        series = price_data[ticker]
+        y_series = series / series.iloc[0] * 100 if use_normalized else series
+        y_min = min(y_min, y_series.min())
+        y_max = max(y_max, y_series.max())
+
         fig.add_trace(go.Scatter(
-            x=norm_series.index,
-            y=norm_series.values,
+            x=y_series.index,
+            y=y_series.values,
             mode='lines',
             name=ticker,
             hovertemplate=(
                 f"{ticker}<br>"
                 "Date: %{x|%Y-%m-%d}<br>"
-                "Norm Price: %{y:.2f}<extra></extra>"
-                        )))
+                f"{'Norm ' if use_normalized else ''}Price: %{y:.2f}<extra></extra>"
+            )
+        ))
 
-    y_min = min(min(series / series.iloc[0] * 100) for series in price_data.values())
-    y_max = max(max(series / series.iloc[0] * 100) for series in price_data.values())
-
+    # --- Dynamic gridlines ---
     y_range = y_max - y_min
     tick_spacing = max(round(y_range / 10), 1)
-
     tick_start = int(y_min // tick_spacing * tick_spacing)
     tick_end = int(y_max // tick_spacing * tick_spacing + tick_spacing)
     tick_vals = list(range(tick_start, tick_end + 1, tick_spacing))
@@ -110,25 +127,22 @@ if price_data:
         height=500,
         margin=dict(t=40, b=40, l=20, r=20),
         xaxis_title="Date",
-        yaxis_title="Normalized Price",
+        yaxis_title="Normalized Price" if use_normalized else "Raw Price",
         yaxis=dict(
-            gridcolor='lightgray',
+            gridcolor='rgba(200,200,200,0.5)',
             gridwidth=1,
-            tickvals=tick_vals,
-            showgrid=True,
             griddash='dot',
-            linecolor='rgba(0,0,0,0.2)'
+            tickvals=tick_vals,
+            showgrid=True
         ),
-        xaxis=dict(
-            tickangle=-90
-        ),
+        xaxis=dict(tickangle=-90),
         hovermode="x unified",
         template="plotly_white"
     )
 
     st.plotly_chart(fig, use_container_width=True)
 else:
-    st.info("No valid price data available to chart.")
+    st.info("No tickers selected for chart display.")
 
 # --- Analysis Tables ---
 if analyze and tickers:
