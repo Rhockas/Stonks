@@ -35,7 +35,7 @@ def compute_scores(tickers):
             continue
     return pd.DataFrame(rows)
 
-# ========= CHART HELPERS (updated) =========
+# ========= CHART HELPERS (robust + simple fallbacks) =========
 def _clean_series(s: pd.Series) -> pd.Series | None:
     if s is None or len(s) == 0:
         return None
@@ -68,7 +68,7 @@ def _try_history(ticker: str, period: str, interval: str):
 
 def _try_download(ticker: str, period: str, interval: str):
     try:
-        df = yf.download(ticker, period=period, interval=interval, auto_adjust=False, progress=False, threads=True)
+        df = yf.download(ticker, period=period, interval=interval, auto_adjust=False, progress=False)
         if df is not None and not df.empty and "Close" in df:
             return df["Close"].dropna()
     except Exception:
@@ -124,9 +124,28 @@ def fetch_series_for_chart(ticker: str, period_label: str) -> pd.Series | None:
         if period_label == "3 Years":
             s = _try_download(ticker, "3y", "1wk")
             return _clean_series(s)
-
     except Exception:
         return None
+    return None
+
+# Simple-mode (matches your original approach) if robust path yields nothing.
+SIMPLE_MAP = {
+    "1 Day":   ("1d",  "5m"),
+    "1 Week":  ("5d",  "30m"),
+    "1 Month": ("1mo", "1d"),
+    "6 Months":("6mo", "1d"),
+    "1 Year":  ("1y",  "1d"),
+    "3 Years": ("3y",  "1wk"),
+}
+
+def simple_fetch_series(ticker: str, period_label: str) -> pd.Series | None:
+    period, interval = SIMPLE_MAP[period_label]
+    try:
+        df = yf.Ticker(ticker).history(period=period, interval=interval)
+        if df is not None and not df.empty and "Close" in df:
+            return _clean_series(df["Close"].dropna())
+    except Exception:
+        pass
     return None
 
 # ========= Header =========
@@ -179,7 +198,7 @@ if st.session_state.show_details:
         except Exception as e:
             st.error(f"Error loading details: {e}")
 
-# ========= Chart (same UI, fixed data) =========
+# ========= Chart (same UI; robust + simple fallback) =========
 if st.session_state.show_chart:
     if not tickers:
         st.warning("Please enter at least one ticker.")
@@ -192,11 +211,14 @@ if st.session_state.show_chart:
         )
         use_normalized = st.checkbox("Normalize prices (start from 100)", value=True)
 
-        # gather data
         price_data = {}
         empties = []
+
         for t in tickers:
             s = fetch_series_for_chart(t, period_label)
+            if s is None or s.empty:
+                # try the simple/original path as a fallback
+                s = simple_fetch_series(t, period_label)
             if s is not None and not s.empty:
                 price_data[t] = s
             else:
@@ -239,14 +261,14 @@ if st.session_state.show_chart:
                     )
                 ))
 
+            tick_vals = None
             if y_min is not None and y_max is not None:
                 y_range = y_max - y_min
-                tick_spacing = max(round(y_range / 10), 1)
-                tick_start = int(y_min // tick_spacing * tick_spacing)
-                tick_end = int(y_max // tick_spacing * tick_spacing + tick_spacing)
-                tick_vals = list(range(tick_start, tick_end + 1, tick_spacing))
-            else:
-                tick_vals = None
+                if y_range > 0:
+                    tick_spacing = max(round(y_range / 10), 1)
+                    tick_start = int(y_min // tick_spacing * tick_spacing)
+                    tick_end = int(y_max // tick_spacing * tick_spacing + tick_spacing)
+                    tick_vals = list(range(tick_start, tick_end + 1, tick_spacing))
 
             fig.update_layout(
                 height=500,
@@ -268,9 +290,7 @@ if st.session_state.show_chart:
         else:
             st.info("No chart data to display.")
 
-        # optional debug to spot which tickers had no data for this timeframe
-        with st.expander("Chart debug"):
-            if empties:
-                st.write(f"No data for timeframe **{period_label}**:", ", ".join(empties[:20]) + ("…" if len(empties) > 20 else ""))
-            else:
-                st.write("All requested tickers returned data for this timeframe.")
+        # Tiny debug to see which tickers/timeframes fail
+        if empties:
+            with st.expander("Chart debug"):
+                st.write(f"No data for **{period_label}**:", ", ".join(empties[:20]) + ("…" if len(empties) > 20 else ""))
