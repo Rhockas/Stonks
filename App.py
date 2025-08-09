@@ -127,7 +127,13 @@ def simple_fetch_series(ticker: str, period_label: str) -> pd.Series | None:
     try:
         df = yf.Ticker(ticker).history(period=period, interval=interval)
         if df is not None and not df.empty and "Close" in df:
-            return _clean_series(df["Close"].dropna())
+            s = _clean_series(df["Close"].dropna())
+            # 🔒 ensure exactly last calendar month, even in simple mode
+            if period_label == "1 Month" and s is not None and not s.empty:
+                end = s.index.max()
+                start = end - pd.DateOffset(months=1)
+                s = _clean_series(s[(s.index >= start) & (s.index <= end)])
+            return s
     except Exception:
         pass
     return None
@@ -259,10 +265,10 @@ if st.session_state.show_chart:
             # Only compress off-hours on intraday charts
             if is_intraday(period_label):
                 layout_kwargs["xaxis"]["rangebreaks"] = intraday_rangebreaks()
-            if selected:
-                xmin = min(price_data[t].index.min() for t in selected)
-                xmax = max(price_data[t].index.max() for t in selected)
-                fig.update_xaxes(range=[xmin, xmax])
+            if selected and period_label == "1 Month":
+                end = max(price_data[t].index.max() for t in selected)
+                start = end - pd.DateOffset(months=1)
+                fig.update_xaxes(range=[start, end])
             fig.update_layout(**layout_kwargs)
             st.plotly_chart(fig, use_container_width=True)
         else:
