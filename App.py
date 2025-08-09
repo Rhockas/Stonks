@@ -198,6 +198,9 @@ if st.session_state.show_chart:
         price_data, empties = {}, []
         for t in tickers:
             s = fetch_series_for_chart(t, period_label)
+            if s is None or s.empty:
+                # fallback to simple approach
+                s = simple_fetch_series(t, period_label)
             if s is not None and not s.empty:
                 price_data[t] = s
             else:
