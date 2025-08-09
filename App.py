@@ -37,57 +37,82 @@ def compute_scores(tickers):
             continue
     return pd.DataFrame(rows)
 
+def _last_trading_day_15m(ticker):
+    """
+    Robust intraday: get 7d/5m, pick the last trading day present,
+    return that day's Close series (tz-normalized).
+    """
+    try:
+        df7 = yf.download(ticker, period="7d", interval="5m",
+                          auto_adjust=True, progress=False)
+        if df7 is None or df7.empty:
+            return None
+        s = df7["Close"].dropna()
+        # Normalize index to UTC; handle tz-naive too
+        idx = s.index
+        if getattr(idx, "tz", None) is None:
+            idx = idx.tz_localize("UTC")
+        else:
+            idx = idx.tz_convert("UTC")
+        s.index = idx
+
+        # Group by calendar day, pick the last one
+        last_day = s.index[-1].date()
+        day_mask = s.index.date == last_day
+        day_series = s.loc[day_mask]
+        return day_series if not day_series.empty else None
+    except Exception:
+        return None
+
 def get_series_for_timeframe(ticker, tf_label):
     """
     Return a Close-price series for the chosen timeframe.
-    1D -> last 24h (5m bars, with 7d fallback slice)
-    1W -> last 7d (30m bars from 1mo, sliced)
-    1M -> 1mo daily
-    6M -> 6mo daily
-    1Y -> 1y  daily
-    3Y -> 3y  weekly
     """
     try:
         if tf_label == "1 Day":
-            # Try 1d/5m first
-            s = yf.download(ticker, period="1d", interval="5m",
-                            auto_adjust=True, progress=False)["Close"]
-            if s is not None and not s.empty:
-                return s
-            # Fallback: get 7d/5m and slice last 24h
-            df7 = yf.download(ticker, period="7d", interval="5m",
-                              auto_adjust=True, progress=False)
-            if df7 is None or df7.empty:
-                return None
-            s = df7["Close"]
-            now = pd.Timestamp.utcnow()
-            return s[s.index >= (now - pd.Timedelta("24h"))]
+            # Always take the *last trading day* 5m series
+            return _last_trading_day_15m(ticker)
 
         elif tf_label == "1 Week":
-            # Pull 1mo/30m and slice last 7 days
+            # Prefer 30m bars, slice last 7 days; fallback to daily
             df = yf.download(ticker, period="1mo", interval="30m",
                              auto_adjust=True, progress=False)
-            if df is None or df.empty:
-                return None
-            s = df["Close"]
-            now = pd.Timestamp.utcnow()
-            return s[s.index >= (now - pd.Timedelta("7d"))]
+            if df is not None and not df.empty:
+                s = df["Close"].dropna()
+                idx = s.index
+                if getattr(idx, "tz", None) is None:
+                    idx = idx.tz_localize("UTC")
+                else:
+                    idx = idx.tz_convert("UTC")
+                s.index = idx
+                cutoff = pd.Timestamp.utcnow().tz_localize("UTC") - pd.Timedelta("7d")
+                s = s[s.index >= cutoff]
+                if not s.empty:
+                    return s
+            # fallback daily
+            dfd = yf.download(ticker, period="1mo", interval="1d",
+                              auto_adjust=True, progress=False)
+            return None if dfd is None or dfd.empty else dfd["Close"].dropna()
 
         elif tf_label == "1 Month":
-            return yf.download(ticker, period="1mo", interval="1d",
-                               auto_adjust=True, progress=False)["Close"]
+            d = yf.download(ticker, period="1mo", interval="1d",
+                            auto_adjust=True, progress=False)
+            return None if d is None or d.empty else d["Close"].dropna()
 
         elif tf_label == "6 Months":
-            return yf.download(ticker, period="6mo", interval="1d",
-                               auto_adjust=True, progress=False)["Close"]
+            d = yf.download(ticker, period="6mo", interval="1d",
+                            auto_adjust=True, progress=False)
+            return None if d is None or d.empty else d["Close"].dropna()
 
         elif tf_label == "1 Year":
-            return yf.download(ticker, period="1y", interval="1d",
-                               auto_adjust=True, progress=False)["Close"]
+            d = yf.download(ticker, period="1y", interval="1d",
+                            auto_adjust=True, progress=False)
+            return None if d is None or d.empty else d["Close"].dropna()
 
         elif tf_label == "3 Years":
-            return yf.download(ticker, period="3y", interval="1wk",
-                               auto_adjust=True, progress=False)["Close"]
+            d = yf.download(ticker, period="3y", interval="1wk",
+                            auto_adjust=True, progress=False)
+            return None if d is None or d.empty else d["Close"].dropna()
 
     except Exception:
         return None
@@ -141,6 +166,7 @@ if st.session_state.show_details:
             st.error(f"Error loading details: {e}")
 
 # ========= Chart =========
+# ---------- REPLACE your chart section with this ----------
 if st.session_state.show_chart:
     if not tickers:
         st.warning("Please enter at least one ticker.")
@@ -150,13 +176,17 @@ if st.session_state.show_chart:
         normalize = st.checkbox("Normalize (start = 100)", value=True, key="norm_chart")
 
         fig = go.Figure()
-        shown = 0
+        shown, empty_list = 0, []
 
         for t in tickers:
             s = get_series_for_timeframe(t, tf)
             if s is None or s.empty:
-                st.info(f"{t}: no data for {tf}.")
+                empty_list.append(t)
                 continue
+            # make index naive for Plotly if tz is present (keeps hover tidy)
+            if getattr(s.index, "tz", None) is not None:
+                s.index = s.index.tz_convert("UTC").tz_localize(None)
+
             y = s / s.iloc[0] * 100 if normalize else s
             fig.add_trace(go.Scatter(x=y.index, y=y.values, mode="lines", name=t))
             shown += 1
@@ -173,3 +203,8 @@ if st.session_state.show_chart:
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No chart data to display.")
+
+        # Small debug note so you know which ones had no data for the chosen timeframe
+        if empty_list:
+            st.caption(f"No data returned for: {', '.join(empty_list[:10])}{'…' if len(empty_list)>10 else ''}")
+
