@@ -18,8 +18,7 @@ if "show_chart" not in st.session_state:
 # ========= Helpers =========
 @st.cache_data(ttl=3600)
 def load_quick_view(path="quick_view.csv"):
-    df = pd.read_csv(path)
-    return df  # keep raw; we’ll format later
+    return pd.read_csv(path)
 
 def compute_scores(tickers):
     rows = []
@@ -35,99 +34,74 @@ def compute_scores(tickers):
             continue
     return pd.DataFrame(rows)
 
-def fill_missing_price_changes(df_quick: pd.DataFrame) -> pd.DataFrame:
-    """
-    If 1M% / 1Y% are missing, compute them once in a batch and merge.
-    """
-    out = df_quick.copy()
-    # Ensure the columns exist
-    for col in ["1M %", "1Y %"]:
-        if col not in out.columns:
-            out[col] = np.nan
+def _clean_series(s: pd.Series) -> pd.Series | None:
+    """Make series Plotly‑safe: datetime index, sorted, tz‑naive, float dtype, >=2 pts."""
+    if s is None or s.empty:
+        return None
+    # Ensure DatetimeIndex
+    if not isinstance(s.index, pd.DatetimeIndex):
+        try:
+            s.index = pd.to_datetime(s.index)
+        except Exception:
+            return None
+    # Sort & drop dup timestamps (keep last)
+    s = s[~s.index.duplicated(keep="last")].sort_index()
+    # Strip timezone for Plotly
+    if getattr(s.index, "tz", None) is not None:
+        s.index = s.index.tz_convert("UTC").tz_localize(None)
+    # Coerce numeric
+    s = pd.to_numeric(s, errors="coerce")
+    s = s.dropna()
+    if len(s) < 2:
+        return None
+    return s
 
-    missing = out.loc[out["1M %"].isna() | out["1Y %"].isna(), "Ticker"].dropna().astype(str).tolist()
-    if not missing:
-        return out
-
-    try:
-        data = yf.download(
-            tickers=list(set(missing)),
-            period="1y",
-            interval="1d",
-            group_by="ticker",
-            auto_adjust=True,
-            threads=True,
-            progress=False,
-        )
-        rows = []
-        for t in missing:
-            try:
-                if isinstance(data.columns, pd.MultiIndex):
-                    close = data[t]["Close"].dropna()
-                else:
-                    close = data["Close"].dropna()
-                if close.empty:
-                    continue
-                last = close.iloc[-1]
-                def pct_back(n):
-                    return float((last / close.iloc[-n] - 1) * 100) if len(close) > n else np.nan
-                rows.append({"Ticker": t, "1M %": round(pct_back(21), 2), "1Y %": round(pct_back(252), 2)})
-            except Exception:
-                continue
-        if rows:
-            patch = pd.DataFrame(rows)
-            out = out.merge(patch, on="Ticker", how="left", suffixes=("", "_new"))
-            for col in ["1M %", "1Y %"]:
-                out[col] = out[col].where(out[col].notna(), out[f"{col}_new"])
-                if f"{col}_new" in out.columns:
-                    out.drop(columns=[f"{col}_new"], inplace=True)
-    except Exception:
-        pass
-    return out
-
-# ---- Chart helpers ----
+@st.cache_data(ttl=300, show_spinner=False)
 def get_series_for_timeframe(ticker, tf_label):
     """
-    Fetch exactly the requested window ending at the LATEST timestamp we have.
-    1D = last 24 hours (slice from 2d/5m so weekends still return a stable last-day line)
-    1W = last 7 days (slice from 1mo/30m)
-    Others = direct fetch
+    Fetch exactly the requested window ending at the latest timestamp.
+    Use UNADJUSTED prices so chart aligns with table returns.
     """
     try:
         if tf_label == "1 Day":
             d = yf.download(ticker, period="2d", interval="5m", auto_adjust=False, progress=False)
-            if d is None or d.empty:
+            s = None if d is None or d.empty else d["Close"].dropna()
+            if s is None or s.empty:
                 return None
-            s = d["Close"].dropna()
             end = s.index[-1]
             start = end - pd.Timedelta("24h")
-            return s[(s.index >= start) & (s.index <= end)]
+            s = s[(s.index >= start) & (s.index <= end)]
+            return _clean_series(s)
 
         elif tf_label == "1 Week":
             d = yf.download(ticker, period="1mo", interval="30m", auto_adjust=False, progress=False)
-            if d is None or d.empty:
+            s = None if d is None or d.empty else d["Close"].dropna()
+            if s is None or s.empty:
                 return None
-            s = d["Close"].dropna()
             end = s.index[-1]
             start = end - pd.Timedelta("7d")
-            return s[(s.index >= start) & (s.index <= end)]
+            s = s[(s.index >= start) & (s.index <= end)]
+            return _clean_series(s)
 
         elif tf_label == "1 Month":
             d = yf.download(ticker, period="1mo", interval="1d", auto_adjust=False, progress=False)
-            return None if d is None or d.empty else d["Close"].dropna()
+            s = None if d is None or d.empty else d["Close"].dropna()
+            return _clean_series(s)
 
         elif tf_label == "6 Months":
             d = yf.download(ticker, period="6mo", interval="1d", auto_adjust=False, progress=False)
-            return None if d is None or d.empty else d["Close"].dropna()
+            s = None if d is None or d.empty else d["Close"].dropna()
+            return _clean_series(s)
 
         elif tf_label == "1 Year":
             d = yf.download(ticker, period="1y", interval="1d", auto_adjust=False, progress=False)
-            return None if d is None or d.empty else d["Close"].dropna()
+            s = None if d is None or d.empty else d["Close"].dropna()
+            return _clean_series(s)
 
         elif tf_label == "3 Years":
             d = yf.download(ticker, period="3y", interval="1wk", auto_adjust=False, progress=False)
-            return None if d is None or d.empty else d["Close"].dropna()
-
+            s = None if d is None or d.empty else d["Close"].dropna()
+            return _clean_series(s)
     except Exception:
         return None
     return None
@@ -138,9 +112,7 @@ st.title("Stock Quick View")
 # ========= Quick View Table =========
 st.subheader("Quick View (sortable)")
 quick_df = load_quick_view()
-quick_df = fill_missing_price_changes(quick_df)
 
-# Display formatting: 2dp for numerics, empty strings for NaN
 disp = quick_df.copy()
 num_cols = disp.select_dtypes(include=[np.number]).columns
 disp[num_cols] = disp[num_cols].round(2)
@@ -170,7 +142,6 @@ if st.session_state.show_details:
     else:
         try:
             df_metrics = stock_df(tickers).copy()
-            # Ensure Ticker column exists and matches case
             if "Ticker" not in df_metrics.columns:
                 df_metrics.rename(columns={"Ticker": "Ticker"}, inplace=True)
             df_metrics["Ticker"] = df_metrics["Ticker"].astype(str).str.upper()
@@ -204,12 +175,8 @@ if st.session_state.show_chart:
                 empty_list.append(t)
                 continue
 
-            # make index tz-naive for Plotly if tz exists (cleaner hover)
-            if getattr(s.index, "tz", None) is not None:
-                s.index = s.index.tz_convert("UTC").tz_localize(None)
-
-            y = s / s.iloc[0] * 100 if normalize else s
-            fig.add_trace(go.Scatter(x=y.index, y=y.values, mode="lines", name=t))
+            y = s / s.iloc[0] * 100 if normalize else s.astype(float)
+            fig.add_trace(go.Scatter(x=y.index, y=y.values, mode="lines+markers", name=t))  # markers help verify points
             shown += 1
 
         if shown:
@@ -224,6 +191,5 @@ if st.session_state.show_chart:
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No chart data to display.")
-
         if empty_list:
             st.caption(f"No data returned for: {', '.join(empty_list[:10])}{'…' if len(empty_list)>10 else ''}")
