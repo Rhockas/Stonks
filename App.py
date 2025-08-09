@@ -15,11 +15,12 @@ if "show_details" not in st.session_state:
 if "show_chart" not in st.session_state:
     st.session_state.show_chart = False
 
-# ========= Helpers =========
+# ========= Quick table loader =========
 @st.cache_data(ttl=3600)
 def load_quick_view(path="quick_view.csv"):
     return pd.read_csv(path)
 
+# ========= Score helper for details =========
 def compute_scores(tickers):
     rows = []
     for t in tickers:
@@ -34,88 +35,62 @@ def compute_scores(tickers):
             continue
     return pd.DataFrame(rows)
 
-def _clean_series(s: pd.Series) -> pd.Series | None:
-    """Make series Plotly‑safe: datetime index, sorted, tz‑naive, float dtype, >=2 pts."""
+# ========= CHART HELPERS (only part changed) =========
+def _clean_series(s: pd.Series):
     if s is None or s.empty:
         return None
     if not isinstance(s.index, pd.DatetimeIndex):
-        try:
-            s.index = pd.to_datetime(s.index)
-        except Exception:
-            return None
-    s = s[~s.index.duplicated(keep="last")].sort_index()
+        s.index = pd.to_datetime(s.index, errors="coerce")
+    s = s.dropna()
+    if s.empty:
+        return None
     if getattr(s.index, "tz", None) is not None:
         s.index = s.index.tz_convert("UTC").tz_localize(None)
-    s = pd.to_numeric(s, errors="coerce").dropna()
-    if len(s) < 2:
-        return None
-    return s
+    s = s[~s.index.duplicated(keep="last")].sort_index()
+    return s if len(s) > 1 else None
 
-def _try_download_series(ticker: str, period: str, interval: str, auto_adjust: bool):
-    """Return a Close series via yf.download (un/maybe adjusted)."""
-    df = yf.download(ticker, period=period, interval=interval,
-                     auto_adjust=auto_adjust, progress=False, threads=True)
-    if df is None or df.empty:
-        return None
-    if "Close" not in df.columns:
-        return None
-    return df["Close"].dropna()
-
-def _try_history_series(ticker: str, period: str, interval: str, auto_adjust: bool):
-    """Return a Close series via Ticker.history (un/maybe adjusted)."""
-    h = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=auto_adjust)
-    if h is None or h.empty:
-        return None
-    if "Close" not in h.columns:
-        return None
-    return h["Close"].dropna()
-
-@st.cache_data(ttl=300, show_spinner=False)
-def get_series_for_timeframe(ticker, tf_label):
+def fetch_series_for_chart(ticker: str, period_label: str):
     """
-    Robust fetcher:
-    1) download(unadjusted) -> history(unadjusted) -> download(adjusted) -> history(adjusted)
-    Then slice to requested window when needed.
+    Original behavior for all periods, with a reliable 1‑Day:
+    - 1 Day: use 5m bars from last 2 days, slice last 24h
+    - Other periods: use Ticker.history(period=...), fallback to yf.download
     """
-    def fetch(period, interval):
-        s = (_try_download_series(ticker, period, interval, auto_adjust=False)
-             or _try_history_series(ticker, period, interval, auto_adjust=False)
-             or _try_download_series(ticker, period, interval, auto_adjust=True)
-             or _try_history_series(ticker, period, interval, auto_adjust=True))
-        return _clean_series(s)
-
     try:
-        if tf_label == "1 Day":
-            s = fetch("2d", "5m")
-            if s is None:
+        if period_label == "1 Day":
+            df = yf.download(ticker, period="2d", interval="5m",
+                             auto_adjust=False, progress=False, threads=True)
+            if df is None or df.empty or "Close" not in df:
                 return None
+            s = df["Close"].dropna()
             end = s.index[-1]
             start = end - pd.Timedelta("24h")
-            return s[(s.index >= start) & (s.index <= end)]
+            return _clean_series(s[(s.index >= start) & (s.index <= end)])
 
-        elif tf_label == "1 Week":
-            s = fetch("1mo", "30m")
-            if s is None:
-                return None
-            end = s.index[-1]
-            start = end - pd.Timedelta("7d")
-            return s[(s.index >= start) & (s.index <= end)]
+        period_map = {
+            "1 Week": "5d",
+            "1 Month": "1mo",
+            "6 Months": "6mo",
+            "1 Year": "1y",
+            "3 Years": "3y",
+        }
+        period = period_map[period_label]
 
-        elif tf_label == "1 Month":
-            return fetch("1mo", "1d")
+        df = yf.Ticker(ticker).history(period=period, auto_adjust=False)
+        if (df is None or df.empty) and period_label in {"1 Month", "6 Months", "1 Year"}:
+            df = yf.download(ticker, period=period, interval="1d",
+                             auto_adjust=False, progress=False, threads=True)
+        if (df is None or df.empty) and period_label == "1 Week":
+            df = yf.download(ticker, period="5d", interval="30m",
+                             auto_adjust=False, progress=False, threads=True)
+        if (df is None or df.empty) and period_label == "3 Years":
+            df = yf.download(ticker, period="3y", interval="1wk",
+                             auto_adjust=False, progress=False, threads=True)
 
-        elif tf_label == "6 Months":
-            return fetch("6mo", "1d")
-
-        elif tf_label == "1 Year":
-            return fetch("1y", "1d")
-
-        elif tf_label == "3 Years":
-            return fetch("3y", "1wk")
-
+        if df is None or df.empty or "Close" not in df:
+            return None
+        return _clean_series(df["Close"])
     except Exception:
         return None
-    return None
 
 # ========= Header =========
 st.title("Stock Quick View")
@@ -167,39 +142,78 @@ if st.session_state.show_details:
         except Exception as e:
             st.error(f"Error loading details: {e}")
 
-# ========= Chart =========
+# ========= Chart (original look & feel, now reliable) =========
 if st.session_state.show_chart:
     if not tickers:
         st.warning("Please enter at least one ticker.")
     else:
         st.subheader("Price Chart")
-        tf = st.selectbox("Timeframe", ["1 Day", "1 Week", "1 Month", "6 Months", "1 Year", "3 Years"], index=2)
-        normalize = st.checkbox("Normalize (start = 100)", value=True, key="norm_chart")
+        period_label = st.selectbox(
+            "Select time period:",
+            ["1 Day", "1 Week", "1 Month", "6 Months", "1 Year", "3 Years"],
+            index=2
+        )
+        use_normalized = st.checkbox("Normalize prices (start from 100)", value=True)
 
-        fig = go.Figure()
-        shown, empty_list = 0, []
-
+        # gather data
+        price_data = {}
         for t in tickers:
-            s = get_series_for_timeframe(t, tf)
-            if s is None or s.empty:
-                empty_list.append(t)
-                continue
+            s = fetch_series_for_chart(t, period_label)
+            if s is not None:
+                price_data[t] = s
 
-            y = s / s.iloc[0] * 100 if normalize else s.astype(float)
-            fig.add_trace(go.Scatter(x=y.index, y=y.values, mode="lines+markers", name=t))
-            shown += 1
+        selected = st.multiselect(
+            "Select tickers to show in chart:",
+            options=list(price_data.keys()),
+            default=list(price_data.keys())
+        )
 
-        if shown:
+        if selected:
+            fig = go.Figure()
+            y_min, y_max = float('inf'), float('-inf')
+
+            for t in selected:
+                series = price_data[t]
+                y_series = series / series.iloc[0] * 100 if use_normalized else series
+                y_min = min(y_min, y_series.min())
+                y_max = max(y_max, y_series.max())
+
+                fig.add_trace(go.Scatter(
+                    x=y_series.index,
+                    y=y_series.values,
+                    mode='lines',
+                    name=t,
+                    hovertemplate = (
+                        f"{t}<br>"
+                        "Date: %{x|%Y-%m-%d %H:%M}<br>"
+                        + ("Norm " if use_normalized else "")
+                        + "Price: %{y:.2f}<extra></extra>"
+                    )
+                ))
+
+            y_range = y_max - y_min
+            tick_spacing = max(round(y_range / 10), 1) if y_range != float('inf') else 1
+            tick_start = int(y_min // tick_spacing * tick_spacing) if y_min != float('inf') else 0
+            tick_end = int(y_max // tick_spacing * tick_spacing + tick_spacing) if y_max != float('-inf') else 1
+            tick_vals = list(range(tick_start, tick_end + 1, tick_spacing))
+
             fig.update_layout(
                 height=500,
-                template="plotly_white",
+                margin=dict(t=40, b=40, l=20, r=20),
+                xaxis_title="Date",
+                yaxis_title="Normalized Price" if use_normalized else "Raw Price",
+                yaxis=dict(
+                    gridcolor='rgba(200,200,200,0.5)',
+                    gridwidth=1,
+                    griddash='dot',
+                    tickvals=tick_vals,
+                    showgrid=True
+                ),
+                xaxis=dict(tickangle=-45),
                 hovermode="x unified",
-                xaxis_title="Time",
-                yaxis_title="Normalized" if normalize else "Price",
-                margin=dict(t=30, b=40, l=20, r=20),
+                template="plotly_white"
             )
+
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No chart data to display.")
-        if empty_list:
-            st.caption(f"No data returned for: {', '.join(empty_list[:10])}{'…' if len(empty_list)>10 else ''}")
+            st.info("No tickers selected for chart display.")
