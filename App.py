@@ -87,14 +87,19 @@ def fetch_series_for_chart(ticker: str, period_label: str) -> pd.Series | None:
             return _slice_last(s, "7d")
 
         if period_label == "1 Month":
-            for per, iv in [("60d", "60m"), ("30d", "60m"), ("60d", "90m")]:
-                s = _try_dl(ticker, per, iv)
-                if s is not None and not s.empty:
-                    s = _slice_last(s, "30d")
-                    if s is not None and not s.empty:
-                        return s
-            s = _try_dl(ticker, "1mo", "1d")
-            return _clean_series(s)
+            # try intraday first
+            s = _try_dl(ticker, "60d", "60m") or _try_dl(ticker, "30d", "60m") or _try_dl(ticker, "60d", "90m")
+            if s is None or s.empty:
+                s = _try_dl(ticker, "1mo", "1d")
+            if s is None:
+                return None
+            s = _clean_series(s)
+            if s is None:
+                return None
+            end = s.index[-1]
+            # exact last calendar month from latest date
+            start = end - pd.DateOffset(months=1)
+            return _clean_series(s[(s.index >= start) & (s.index <= end)])
 
         if period_label == "6 Months":
             return _clean_series(_try_dl(ticker, "6mo", "1d"))
