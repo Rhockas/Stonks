@@ -35,9 +35,10 @@ def compute_scores(tickers):
             continue
     return pd.DataFrame(rows)
 
-# ========= CHART HELPERS (only part changed) =========
-def _clean_series(s: pd.Series):
-    if s is None or s.empty:
+# ========= CHART HELPERS (updated) =========
+def _clean_series(s: pd.Series) -> pd.Series | None:
+    """Make a clean float Series with a tz‑naive DatetimeIndex, sorted, ≥2 points."""
+    if s is None or len(s) == 0:
         return None
     if not isinstance(s.index, pd.DatetimeIndex):
         s.index = pd.to_datetime(s.index, errors="coerce")
@@ -47,50 +48,66 @@ def _clean_series(s: pd.Series):
     if getattr(s.index, "tz", None) is not None:
         s.index = s.index.tz_convert("UTC").tz_localize(None)
     s = s[~s.index.duplicated(keep="last")].sort_index()
+    s = pd.to_numeric(s, errors="coerce").dropna()
     return s if len(s) > 1 else None
 
-def fetch_series_for_chart(ticker: str, period_label: str):
+def _slice_last(s: pd.Series, delta: str) -> pd.Series | None:
+    """Slice last <delta> window (e.g., '24h', '7d', '30d') based on the last timestamp present."""
+    if s is None or s.empty:
+        return None
+    end = s.index[-1]
+    start = end - pd.Timedelta(delta)
+    s = s[(s.index >= start) & (s.index <= end)]
+    return _clean_series(s)
+
+def fetch_series_for_chart(ticker: str, period_label: str) -> pd.Series | None:
     """
-    Original behavior for all periods, with a reliable 1‑Day:
-    - 1 Day: use 5m bars from last 2 days, slice last 24h
-    - Other periods: use Ticker.history(period=...), fallback to yf.download
+    Intraday bars for short windows; daily/weekly for long windows.
+    1D: 5m bars sliced to last 24h
+    1W: 30m bars sliced to last 7d
+    1M: 60m bars over ~60d, resampled to 4H, sliced to last 30d
+    6M/1Y: daily
+    3Y: weekly
     """
     try:
         if period_label == "1 Day":
-            df = yf.download(ticker, period="2d", interval="5m",
-                             auto_adjust=False, progress=False, threads=True)
+            df = yf.download(ticker, period="2d", interval="5m", auto_adjust=False, progress=False, threads=True)
+            if df is None or df.empty or "Close" not in df:
+                return None
+            return _slice_last(df["Close"], "24h")
+
+        if period_label == "1 Week":
+            df = yf.download(ticker, period="14d", interval="30m", auto_adjust=False, progress=False, threads=True)
+            if df is None or df.empty or "Close" not in df:
+                return None
+            return _slice_last(df["Close"], "7d")
+
+        if period_label == "1 Month":
+            # Yahoo doesn’t have native 4h; resample 60m -> 4H
+            df = yf.download(ticker, period="60d", interval="60m", auto_adjust=False, progress=False, threads=True)
             if df is None or df.empty or "Close" not in df:
                 return None
             s = df["Close"].dropna()
-            end = s.index[-1]
-            start = end - pd.Timedelta("24h")
-            return _clean_series(s[(s.index >= start) & (s.index <= end)])
+            s = _slice_last(s, "30d")
+            if s is None:
+                return None
+            s4h = s.resample("4H").last().dropna()
+            return _clean_series(s4h)
 
-        period_map = {
-            "1 Week": "5d",
-            "1 Month": "1mo",
-            "6 Months": "6mo",
-            "1 Year": "1y",
-            "3 Years": "3y",
-        }
-        period = period_map[period_label]
+        if period_label == "6 Months":
+            df = yf.download(ticker, period="6mo", interval="1d", auto_adjust=False, progress=False, threads=True)
+            return None if df is None or df.empty or "Close" not in df else _clean_series(df["Close"])
 
-        df = yf.Ticker(ticker).history(period=period, auto_adjust=False)
-        if (df is None or df.empty) and period_label in {"1 Month", "6 Months", "1 Year"}:
-            df = yf.download(ticker, period=period, interval="1d",
-                             auto_adjust=False, progress=False, threads=True)
-        if (df is None or df.empty) and period_label == "1 Week":
-            df = yf.download(ticker, period="5d", interval="30m",
-                             auto_adjust=False, progress=False, threads=True)
-        if (df is None or df.empty) and period_label == "3 Years":
-            df = yf.download(ticker, period="3y", interval="1wk",
-                             auto_adjust=False, progress=False, threads=True)
+        if period_label == "1 Year":
+            df = yf.download(ticker, period="1y", interval="1d", auto_adjust=False, progress=False, threads=True)
+            return None if df is None or df.empty or "Close" not in df else _clean_series(df["Close"])
 
-        if df is None or df.empty or "Close" not in df:
-            return None
-        return _clean_series(df["Close"])
+        if period_label == "3 Years":
+            df = yf.download(ticker, period="3y", interval="1wk", auto_adjust=False, progress=False, threads=True)
+            return None if df is None or df.empty or "Close" not in df else _clean_series(df["Close"])
     except Exception:
         return None
+    return None
 
 # ========= Header =========
 st.title("Stock Quick View")
@@ -142,7 +159,7 @@ if st.session_state.show_details:
         except Exception as e:
             st.error(f"Error loading details: {e}")
 
-# ========= Chart (original look & feel, now reliable) =========
+# ========= Chart (same UI, fixed data) =========
 if st.session_state.show_chart:
     if not tickers:
         st.warning("Please enter at least one ticker.")
@@ -170,17 +187,24 @@ if st.session_state.show_chart:
 
         if selected:
             fig = go.Figure()
-            y_min, y_max = float('inf'), float('-inf')
+            y_min, y_max = None, None
 
             for t in selected:
                 series = price_data[t]
-                y_series = series / series.iloc[0] * 100 if use_normalized else series
-                y_min = min(y_min, y_series.min())
-                y_max = max(y_max, y_series.max())
+                y_vals = series.to_numpy(dtype="float64")
+                if len(y_vals) < 2:
+                    continue
+
+                if use_normalized:
+                    y_vals = (y_vals / y_vals[0]) * 100.0
+                ymin = float(np.min(y_vals))
+                ymax = float(np.max(y_vals))
+                y_min = ymin if y_min is None else min(y_min, ymin)
+                y_max = ymax if y_max is None else max(y_max, ymax)
 
                 fig.add_trace(go.Scatter(
-                    x=y_series.index,
-                    y=y_series.values,
+                    x=series.index,
+                    y=y_vals,
                     mode='lines',
                     name=t,
                     hovertemplate = (
@@ -191,16 +215,19 @@ if st.session_state.show_chart:
                     )
                 ))
 
-            y_range = y_max - y_min
-            tick_spacing = max(round(y_range / 10), 1) if y_range != float('inf') else 1
-            tick_start = int(y_min // tick_spacing * tick_spacing) if y_min != float('inf') else 0
-            tick_end = int(y_max // tick_spacing * tick_spacing + tick_spacing) if y_max != float('-inf') else 1
-            tick_vals = list(range(tick_start, tick_end + 1, tick_spacing))
+            if y_min is not None and y_max is not None:
+                y_range = y_max - y_min
+                tick_spacing = max(round(y_range / 10), 1)
+                tick_start = int(y_min // tick_spacing * tick_spacing)
+                tick_end = int(y_max // tick_spacing * tick_spacing + tick_spacing)
+                tick_vals = list(range(tick_start, tick_end + 1, tick_spacing))
+            else:
+                tick_vals = None
 
             fig.update_layout(
                 height=500,
                 margin=dict(t=40, b=40, l=20, r=20),
-                xaxis_title="Date",
+                xaxis_title="Time",
                 yaxis_title="Normalized Price" if use_normalized else "Raw Price",
                 yaxis=dict(
                     gridcolor='rgba(200,200,200,0.5)',
@@ -216,4 +243,4 @@ if st.session_state.show_chart:
 
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No tickers selected for chart display.")
+            st.info("No chart data to display.")
