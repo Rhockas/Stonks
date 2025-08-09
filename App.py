@@ -38,70 +38,81 @@ def _clean_series(s: pd.Series) -> pd.Series | None:
     """Make series Plotly‑safe: datetime index, sorted, tz‑naive, float dtype, >=2 pts."""
     if s is None or s.empty:
         return None
-    # Ensure DatetimeIndex
     if not isinstance(s.index, pd.DatetimeIndex):
         try:
             s.index = pd.to_datetime(s.index)
         except Exception:
             return None
-    # Sort & drop dup timestamps (keep last)
     s = s[~s.index.duplicated(keep="last")].sort_index()
-    # Strip timezone for Plotly
     if getattr(s.index, "tz", None) is not None:
         s.index = s.index.tz_convert("UTC").tz_localize(None)
-    # Coerce numeric
-    s = pd.to_numeric(s, errors="coerce")
-    s = s.dropna()
+    s = pd.to_numeric(s, errors="coerce").dropna()
     if len(s) < 2:
         return None
     return s
 
+def _try_download_series(ticker: str, period: str, interval: str, auto_adjust: bool):
+    """Return a Close series via yf.download (un/maybe adjusted)."""
+    df = yf.download(ticker, period=period, interval=interval,
+                     auto_adjust=auto_adjust, progress=False, threads=True)
+    if df is None or df.empty:
+        return None
+    if "Close" not in df.columns:
+        return None
+    return df["Close"].dropna()
+
+def _try_history_series(ticker: str, period: str, interval: str, auto_adjust: bool):
+    """Return a Close series via Ticker.history (un/maybe adjusted)."""
+    h = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=auto_adjust)
+    if h is None or h.empty:
+        return None
+    if "Close" not in h.columns:
+        return None
+    return h["Close"].dropna()
+
 @st.cache_data(ttl=300, show_spinner=False)
 def get_series_for_timeframe(ticker, tf_label):
     """
-    Fetch exactly the requested window ending at the latest timestamp.
-    Use UNADJUSTED prices so chart aligns with table returns.
+    Robust fetcher:
+    1) download(unadjusted) -> history(unadjusted) -> download(adjusted) -> history(adjusted)
+    Then slice to requested window when needed.
     """
+    def fetch(period, interval):
+        s = (_try_download_series(ticker, period, interval, auto_adjust=False)
+             or _try_history_series(ticker, period, interval, auto_adjust=False)
+             or _try_download_series(ticker, period, interval, auto_adjust=True)
+             or _try_history_series(ticker, period, interval, auto_adjust=True))
+        return _clean_series(s)
+
     try:
         if tf_label == "1 Day":
-            d = yf.download(ticker, period="2d", interval="5m", auto_adjust=False, progress=False)
-            s = None if d is None or d.empty else d["Close"].dropna()
-            if s is None or s.empty:
+            s = fetch("2d", "5m")
+            if s is None:
                 return None
             end = s.index[-1]
             start = end - pd.Timedelta("24h")
-            s = s[(s.index >= start) & (s.index <= end)]
-            return _clean_series(s)
+            return s[(s.index >= start) & (s.index <= end)]
 
         elif tf_label == "1 Week":
-            d = yf.download(ticker, period="1mo", interval="30m", auto_adjust=False, progress=False)
-            s = None if d is None or d.empty else d["Close"].dropna()
-            if s is None or s.empty:
+            s = fetch("1mo", "30m")
+            if s is None:
                 return None
             end = s.index[-1]
             start = end - pd.Timedelta("7d")
-            s = s[(s.index >= start) & (s.index <= end)]
-            return _clean_series(s)
+            return s[(s.index >= start) & (s.index <= end)]
 
         elif tf_label == "1 Month":
-            d = yf.download(ticker, period="1mo", interval="1d", auto_adjust=False, progress=False)
-            s = None if d is None or d.empty else d["Close"].dropna()
-            return _clean_series(s)
+            return fetch("1mo", "1d")
 
         elif tf_label == "6 Months":
-            d = yf.download(ticker, period="6mo", interval="1d", auto_adjust=False, progress=False)
-            s = None if d is None or d.empty else d["Close"].dropna()
-            return _clean_series(s)
+            return fetch("6mo", "1d")
 
         elif tf_label == "1 Year":
-            d = yf.download(ticker, period="1y", interval="1d", auto_adjust=False, progress=False)
-            s = None if d is None or d.empty else d["Close"].dropna()
-            return _clean_series(s)
+            return fetch("1y", "1d")
 
         elif tf_label == "3 Years":
-            d = yf.download(ticker, period="3y", interval="1wk", auto_adjust=False, progress=False)
-            s = None if d is None or d.empty else d["Close"].dropna()
-            return _clean_series(s)
+            return fetch("3y", "1wk")
+
     except Exception:
         return None
     return None
@@ -112,7 +123,6 @@ st.title("Stock Quick View")
 # ========= Quick View Table =========
 st.subheader("Quick View (sortable)")
 quick_df = load_quick_view()
-
 disp = quick_df.copy()
 num_cols = disp.select_dtypes(include=[np.number]).columns
 disp[num_cols] = disp[num_cols].round(2)
@@ -176,7 +186,7 @@ if st.session_state.show_chart:
                 continue
 
             y = s / s.iloc[0] * 100 if normalize else s.astype(float)
-            fig.add_trace(go.Scatter(x=y.index, y=y.values, mode="lines+markers", name=t))  # markers help verify points
+            fig.add_trace(go.Scatter(x=y.index, y=y.values, mode="lines+markers", name=t))
             shown += 1
 
         if shown:
