@@ -225,9 +225,10 @@ if st.session_state.show_chart:
 
                 fig.add_trace(go.Scatter(
                     x=y.index, y=y.values, mode="lines", name=name,
-                    hovertemplate=f"{t}<br>Date: %{x|%Y-%m-%d %H:%M}<br>"
-                                  f"{'Norm ' if use_normalized else ''}Price: %{y:.2f}<extra></extra>"
-                ))
+                    hovertemplate=(
+                        f"{t}<br>Date: %{{x|%Y-%m-%d %H:%M}}<br>"
+                        f"{'Norm ' if use_normalized else ''}Price: %{{y:.2f}}<extra></extra>"
+                    )
 
             fig.update_layout(
                 height=500,
