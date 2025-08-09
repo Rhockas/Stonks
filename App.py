@@ -87,8 +87,14 @@ def fetch_series_for_chart(ticker: str, period_label: str) -> pd.Series | None:
             return _slice_last(s, "7d")
 
         if period_label == "1 Month":
-            s = _try_dl(ticker, "60d", "60m")
-            return _slice_last(s, "30d")
+            for per, iv in [("60d", "60m"), ("30d", "60m"), ("60d", "90m")]:
+                s = _try_dl(ticker, per, iv)
+                if s is not None and not s.empty:
+                    s = _slice_last(s, "30d")
+                    if s is not None and not s.empty:
+                        return s
+            s = _try_dl(ticker, "1mo", "1d")
+            return _clean_series(s)
 
         if period_label == "6 Months":
             return _clean_series(_try_dl(ticker, "6mo", "1d"))
@@ -106,7 +112,7 @@ def fetch_series_for_chart(ticker: str, period_label: str) -> pd.Series | None:
 SIMPLE_MAP = {
     "1 Day":   ("1d",  "5m"),
     "1 Week":  ("5d",  "30m"),
-    "1 Month": ("1mo", "1d"),
+    "1 Month": ("30d", "60m"),
     "6 Months":("6mo", "1d"),
     "1 Year":  ("1y",  "1d"),
     "3 Years": ("3y",  "1wk"),
