@@ -95,7 +95,7 @@ def get_series_for_timeframe(ticker, tf_label):
     """
     try:
         if tf_label == "1 Day":
-            d = yf.download(ticker, period="2d", interval="5m", auto_adjust=True, progress=False)
+            d = yf.download(ticker, period="2d", interval="5m", auto_adjust=False, progress=False)
             if d is None or d.empty:
                 return None
             s = d["Close"].dropna()
@@ -104,7 +104,7 @@ def get_series_for_timeframe(ticker, tf_label):
             return s[(s.index >= start) & (s.index <= end)]
 
         elif tf_label == "1 Week":
-            d = yf.download(ticker, period="1mo", interval="30m", auto_adjust=True, progress=False)
+            d = yf.download(ticker, period="1mo", interval="30m", auto_adjust=False, progress=False)
             if d is None or d.empty:
                 return None
             s = d["Close"].dropna()
@@ -113,19 +113,19 @@ def get_series_for_timeframe(ticker, tf_label):
             return s[(s.index >= start) & (s.index <= end)]
 
         elif tf_label == "1 Month":
-            d = yf.download(ticker, period="1mo", interval="1d", auto_adjust=True, progress=False)
+            d = yf.download(ticker, period="1mo", interval="1d", auto_adjust=False, progress=False)
             return None if d is None or d.empty else d["Close"].dropna()
 
         elif tf_label == "6 Months":
-            d = yf.download(ticker, period="6mo", interval="1d", auto_adjust=True, progress=False)
+            d = yf.download(ticker, period="6mo", interval="1d", auto_adjust=False, progress=False)
             return None if d is None or d.empty else d["Close"].dropna()
 
         elif tf_label == "1 Year":
-            d = yf.download(ticker, period="1y", interval="1d", auto_adjust=True, progress=False)
+            d = yf.download(ticker, period="1y", interval="1d", auto_adjust=False, progress=False)
             return None if d is None or d.empty else d["Close"].dropna()
 
         elif tf_label == "3 Years":
-            d = yf.download(ticker, period="3y", interval="1wk", auto_adjust=True, progress=False)
+            d = yf.download(ticker, period="3y", interval="1wk", auto_adjust=False, progress=False)
             return None if d is None or d.empty else d["Close"].dropna()
 
     except Exception:
