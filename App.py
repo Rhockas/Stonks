@@ -37,7 +37,7 @@ def compute_scores(tickers):
 
 # ========= CHART HELPERS (robust + simple fallbacks) =========
 def _clean_series(s: pd.Series) -> pd.Series | None:
-    if s is None or len(s) == 0:
+    if s is None or s.empty:
         return None
     if not isinstance(s.index, pd.DatetimeIndex):
         s.index = pd.to_datetime(s.index, errors="coerce")
@@ -57,18 +57,10 @@ def _slice_last(s: pd.Series, delta: str) -> pd.Series | None:
     start = end - pd.Timedelta(delta)
     return _clean_series(s[(s.index >= start) & (s.index <= end)])
 
-def _try_history(ticker: str, period: str, interval: str):
+def _try_dl(ticker: str, period: str, interval: str):
     try:
-        df = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False)
-        if df is not None and not df.empty and "Close" in df:
-            return df["Close"].dropna()
-    except Exception:
-        pass
-    return None
-
-def _try_download(ticker: str, period: str, interval: str):
-    try:
-        df = yf.download(ticker, period=period, interval=interval, auto_adjust=False, progress=False)
+        df = yf.download(ticker, period=period, interval=interval,
+                         auto_adjust=False, progress=False, threads=True)
         if df is not None and not df.empty and "Close" in df:
             return df["Close"].dropna()
     except Exception:
@@ -77,56 +69,45 @@ def _try_download(ticker: str, period: str, interval: str):
 
 def fetch_series_for_chart(ticker: str, period_label: str) -> pd.Series | None:
     """
-    Robust chain with fallbacks:
-      1D  : 2d/5m (history) -> 2d/5m (download) -> 2d/1d sliced to 24h
-      1W  : 14d/30m -> 30d/60m -> 10d/1d
-      1M  : 60d/60m (resample 4H) -> 1mo/1d
-      6M  : 6mo/1d
-      1Y  : 1y/1d
-      3Y  : 3y/1wk
+    1D  : 2d/5m -> slice last 24h
+    1W  : 21d/30m -> slice last 7d
+    1M  : 60d/60m -> slice last 30d  (hourly)
+    6M  : 6mo/1d
+    1Y  : 1y/1d
+    3Y  : 3y/1wk
     """
     try:
         if period_label == "1 Day":
-            s = _try_history(ticker, "2d", "5m") or _try_download(ticker, "2d", "5m")
-            if s is None or s.empty:
-                s = _try_download(ticker, "2d", "1d")
-                return _slice_last(s, "24h") if s is not None else None
+            s = _try_dl(ticker, "2d", "5m")
             return _slice_last(s, "24h")
 
         if period_label == "1 Week":
-            s = _try_download(ticker, "14d", "30m")
-            if s is None or s.empty:
-                s = _try_download(ticker, "30d", "60m")
-            if s is None or s.empty:
-                s = _try_download(ticker, "10d", "1d")
-                return _slice_last(s, "7d") if s is not None else None
+            s = _try_dl(ticker, "21d", "30m")
             return _slice_last(s, "7d")
 
         if period_label == "1 Month":
-            s = _try_download(ticker, "60d", "60m")
-            if s is not None and not s.empty:
-                s = _slice_last(s, "30d")
-                if s is not None and not s.empty:
-                    s4h = s.resample("4H").last().dropna()
-                    return _clean_series(s4h)
-            # fallback daily
-            s = _try_download(ticker, "1mo", "1d")
-            return _clean_series(s)
+            s = _try_dl(ticker, "60d", "60m")
+            return _slice_last(s, "30d")  # hourly already
 
         if period_label == "6 Months":
-            s = _try_download(ticker, "6mo", "1d")
-            return _clean_series(s)
+            return _clean_series(_try_dl(ticker, "6mo", "1d"))
 
         if period_label == "1 Year":
-            s = _try_download(ticker, "1y", "1d")
-            return _clean_series(s)
+            return _clean_series(_try_dl(ticker, "1y", "1d"))
 
         if period_label == "3 Years":
-            s = _try_download(ticker, "3y", "1wk")
-            return _clean_series(s)
+            return _clean_series(_try_dl(ticker, "3y", "1wk"))
     except Exception:
         return None
     return None
+
+def session_rangebreaks(hide_afterhours: bool):
+    # Always hide weekends; optionally hide non‑US trading hours.
+    rbs = [dict(bounds=["sat", "mon"])]
+    if hide_afterhours:
+        # Hide 16:00–09:30 (approx US equities). Keeps intraday lines clean.
+        rbs.append(dict(pattern="hour", bounds=[16, 9.5]))
+    return rbs
 
 # Simple-mode (matches your original approach) if robust path yields nothing.
 SIMPLE_MAP = {
@@ -209,16 +190,14 @@ if st.session_state.show_chart:
             ["1 Day", "1 Week", "1 Month", "6 Months", "1 Year", "3 Years"],
             index=2
         )
-        use_normalized = st.checkbox("Normalize prices (start from 100)", value=True)
+        use_normalized = st.checkbox("Normalize (start = 100)", value=True)
+        hide_afterhours = st.checkbox("Hide non‑trading hours (US)", value=True,
+                                      help="Skips evenings to remove flat lines. Turn off for raw timeline.")
 
-        price_data = {}
-        empties = []
-
+        # fetch data
+        price_data, empties = {}, []
         for t in tickers:
             s = fetch_series_for_chart(t, period_label)
-            if s is None or s.empty:
-                # try the simple/original path as a fallback
-                s = simple_fetch_series(t, period_label)
             if s is not None and not s.empty:
                 price_data[t] = s
             else:
@@ -235,62 +214,36 @@ if st.session_state.show_chart:
             y_min, y_max = None, None
 
             for t in selected:
-                series = price_data[t]
-                y_vals = series.to_numpy(dtype="float64")
-                if len(y_vals) < 2:
-                    continue
+                s = price_data[t].astype(float)
+                y = (s / s.iloc[0] * 100.0) if use_normalized else s
+                pct = (s.iloc[-1] / s.iloc[0] - 1.0) * 100.0
+                name = f"{t} ({pct:+.2f}%)"  # legend shows return
 
-                if use_normalized:
-                    y_vals = (y_vals / y_vals[0]) * 100.0
-
-                ymin = float(np.min(y_vals))
-                ymax = float(np.max(y_vals))
+                ymin, ymax = float(y.min()), float(y.max())
                 y_min = ymin if y_min is None else min(y_min, ymin)
                 y_max = ymax if y_max is None else max(y_max, ymax)
 
                 fig.add_trace(go.Scatter(
-                    x=series.index,
-                    y=y_vals,
-                    mode='lines',
-                    name=t,
-                    hovertemplate = (
-                        f"{t}<br>"
-                        "Date: %{x|%Y-%m-%d %H:%M}<br>"
-                        + ("Norm " if use_normalized else "")
-                        + "Price: %{y:.2f}<extra></extra>"
-                    )
+                    x=y.index, y=y.values, mode="lines", name=name,
+                    hovertemplate=f"{t}<br>Date: %{x|%Y-%m-%d %H:%M}<br>"
+                                  f"{'Norm ' if use_normalized else ''}Price: %{y:.2f}<extra></extra>"
                 ))
-
-            tick_vals = None
-            if y_min is not None and y_max is not None:
-                y_range = y_max - y_min
-                if y_range > 0:
-                    tick_spacing = max(round(y_range / 10), 1)
-                    tick_start = int(y_min // tick_spacing * tick_spacing)
-                    tick_end = int(y_max // tick_spacing * tick_spacing + tick_spacing)
-                    tick_vals = list(range(tick_start, tick_end + 1, tick_spacing))
 
             fig.update_layout(
                 height=500,
-                margin=dict(t=40, b=40, l=20, r=20),
-                xaxis_title="Time",
-                yaxis_title="Normalized Price" if use_normalized else "Price",
-                yaxis=dict(
-                    gridcolor='rgba(200,200,200,0.5)',
-                    gridwidth=1,
-                    griddash='dot',
-                    tickvals=tick_vals,
-                    showgrid=True
-                ),
-                xaxis=dict(tickangle=-45),
+                template="plotly_white",
                 hovermode="x unified",
-                template="plotly_white"
+                xaxis_title="Time",
+                yaxis_title="Normalized" if use_normalized else "Price",
+                margin=dict(t=30, b=40, l=20, r=20),
+                xaxis=dict(
+                    tickangle=-45,
+                    rangebreaks=session_rangebreaks(hide_afterhours)
+                )
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No chart data to display.")
 
-        # Tiny debug to see which tickers/timeframes fail
         if empties:
-            with st.expander("Chart debug"):
-                st.write(f"No data for **{period_label}**:", ", ".join(empties[:20]) + ("…" if len(empties) > 20 else ""))
+            st.caption(f"No data for timeframe **{period_label}**: {', '.join(empties[:12])}{'…' if len(empties)>12 else ''}")
