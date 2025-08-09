@@ -37,7 +37,6 @@ def compute_scores(tickers):
 
 # ========= CHART HELPERS (updated) =========
 def _clean_series(s: pd.Series) -> pd.Series | None:
-    """Make a clean float Series with a tz‑naive DatetimeIndex, sorted, ≥2 points."""
     if s is None or len(s) == 0:
         return None
     if not isinstance(s.index, pd.DatetimeIndex):
@@ -52,59 +51,80 @@ def _clean_series(s: pd.Series) -> pd.Series | None:
     return s if len(s) > 1 else None
 
 def _slice_last(s: pd.Series, delta: str) -> pd.Series | None:
-    """Slice last <delta> window (e.g., '24h', '7d', '30d') based on the last timestamp present."""
     if s is None or s.empty:
         return None
     end = s.index[-1]
     start = end - pd.Timedelta(delta)
-    s = s[(s.index >= start) & (s.index <= end)]
-    return _clean_series(s)
+    return _clean_series(s[(s.index >= start) & (s.index <= end)])
+
+def _try_history(ticker: str, period: str, interval: str):
+    try:
+        df = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False)
+        if df is not None and not df.empty and "Close" in df:
+            return df["Close"].dropna()
+    except Exception:
+        pass
+    return None
+
+def _try_download(ticker: str, period: str, interval: str):
+    try:
+        df = yf.download(ticker, period=period, interval=interval, auto_adjust=False, progress=False, threads=True)
+        if df is not None and not df.empty and "Close" in df:
+            return df["Close"].dropna()
+    except Exception:
+        pass
+    return None
 
 def fetch_series_for_chart(ticker: str, period_label: str) -> pd.Series | None:
     """
-    Intraday bars for short windows; daily/weekly for long windows.
-    1D: 5m bars sliced to last 24h
-    1W: 30m bars sliced to last 7d
-    1M: 60m bars over ~60d, resampled to 4H, sliced to last 30d
-    6M/1Y: daily
-    3Y: weekly
+    Robust chain with fallbacks:
+      1D  : 2d/5m (history) -> 2d/5m (download) -> 2d/1d sliced to 24h
+      1W  : 14d/30m -> 30d/60m -> 10d/1d
+      1M  : 60d/60m (resample 4H) -> 1mo/1d
+      6M  : 6mo/1d
+      1Y  : 1y/1d
+      3Y  : 3y/1wk
     """
     try:
         if period_label == "1 Day":
-            df = yf.download(ticker, period="2d", interval="5m", auto_adjust=False, progress=False, threads=True)
-            if df is None or df.empty or "Close" not in df:
-                return None
-            return _slice_last(df["Close"], "24h")
+            s = _try_history(ticker, "2d", "5m") or _try_download(ticker, "2d", "5m")
+            if s is None or s.empty:
+                s = _try_download(ticker, "2d", "1d")
+                return _slice_last(s, "24h") if s is not None else None
+            return _slice_last(s, "24h")
 
         if period_label == "1 Week":
-            df = yf.download(ticker, period="14d", interval="30m", auto_adjust=False, progress=False, threads=True)
-            if df is None or df.empty or "Close" not in df:
-                return None
-            return _slice_last(df["Close"], "7d")
+            s = _try_download(ticker, "14d", "30m")
+            if s is None or s.empty:
+                s = _try_download(ticker, "30d", "60m")
+            if s is None or s.empty:
+                s = _try_download(ticker, "10d", "1d")
+                return _slice_last(s, "7d") if s is not None else None
+            return _slice_last(s, "7d")
 
         if period_label == "1 Month":
-            # Yahoo doesn’t have native 4h; resample 60m -> 4H
-            df = yf.download(ticker, period="60d", interval="60m", auto_adjust=False, progress=False, threads=True)
-            if df is None or df.empty or "Close" not in df:
-                return None
-            s = df["Close"].dropna()
-            s = _slice_last(s, "30d")
-            if s is None:
-                return None
-            s4h = s.resample("4H").last().dropna()
-            return _clean_series(s4h)
+            s = _try_download(ticker, "60d", "60m")
+            if s is not None and not s.empty:
+                s = _slice_last(s, "30d")
+                if s is not None and not s.empty:
+                    s4h = s.resample("4H").last().dropna()
+                    return _clean_series(s4h)
+            # fallback daily
+            s = _try_download(ticker, "1mo", "1d")
+            return _clean_series(s)
 
         if period_label == "6 Months":
-            df = yf.download(ticker, period="6mo", interval="1d", auto_adjust=False, progress=False, threads=True)
-            return None if df is None or df.empty or "Close" not in df else _clean_series(df["Close"])
+            s = _try_download(ticker, "6mo", "1d")
+            return _clean_series(s)
 
         if period_label == "1 Year":
-            df = yf.download(ticker, period="1y", interval="1d", auto_adjust=False, progress=False, threads=True)
-            return None if df is None or df.empty or "Close" not in df else _clean_series(df["Close"])
+            s = _try_download(ticker, "1y", "1d")
+            return _clean_series(s)
 
         if period_label == "3 Years":
-            df = yf.download(ticker, period="3y", interval="1wk", auto_adjust=False, progress=False, threads=True)
-            return None if df is None or df.empty or "Close" not in df else _clean_series(df["Close"])
+            s = _try_download(ticker, "3y", "1wk")
+            return _clean_series(s)
+
     except Exception:
         return None
     return None
@@ -174,10 +194,13 @@ if st.session_state.show_chart:
 
         # gather data
         price_data = {}
+        empties = []
         for t in tickers:
             s = fetch_series_for_chart(t, period_label)
-            if s is not None:
+            if s is not None and not s.empty:
                 price_data[t] = s
+            else:
+                empties.append(t)
 
         selected = st.multiselect(
             "Select tickers to show in chart:",
@@ -197,6 +220,7 @@ if st.session_state.show_chart:
 
                 if use_normalized:
                     y_vals = (y_vals / y_vals[0]) * 100.0
+
                 ymin = float(np.min(y_vals))
                 ymax = float(np.max(y_vals))
                 y_min = ymin if y_min is None else min(y_min, ymin)
@@ -228,7 +252,7 @@ if st.session_state.show_chart:
                 height=500,
                 margin=dict(t=40, b=40, l=20, r=20),
                 xaxis_title="Time",
-                yaxis_title="Normalized Price" if use_normalized else "Raw Price",
+                yaxis_title="Normalized Price" if use_normalized else "Price",
                 yaxis=dict(
                     gridcolor='rgba(200,200,200,0.5)',
                     gridwidth=1,
@@ -240,7 +264,13 @@ if st.session_state.show_chart:
                 hovermode="x unified",
                 template="plotly_white"
             )
-
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No chart data to display.")
+
+        # optional debug to spot which tickers had no data for this timeframe
+        with st.expander("Chart debug"):
+            if empties:
+                st.write(f"No data for timeframe **{period_label}**:", ", ".join(empties[:20]) + ("…" if len(empties) > 20 else ""))
+            else:
+                st.write("All requested tickers returned data for this timeframe.")
