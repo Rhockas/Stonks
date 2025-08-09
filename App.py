@@ -35,7 +35,7 @@ def compute_scores(tickers):
             continue
     return pd.DataFrame(rows)
 
-# ========= CHART HELPERS (robust + simple fallbacks) =========
+# ========= CHART HELPERS =========
 def _clean_series(s: pd.Series) -> pd.Series | None:
     if s is None or s.empty:
         return None
@@ -44,6 +44,7 @@ def _clean_series(s: pd.Series) -> pd.Series | None:
     s = s.dropna()
     if s.empty:
         return None
+    # convert to UTC and drop timezone so rangebreaks work predictably
     if getattr(s.index, "tz", None) is not None:
         s.index = s.index.tz_convert("UTC").tz_localize(None)
     s = s[~s.index.duplicated(keep="last")].sort_index()
@@ -69,9 +70,9 @@ def _try_dl(ticker: str, period: str, interval: str):
 
 def fetch_series_for_chart(ticker: str, period_label: str) -> pd.Series | None:
     """
-    1D  : 2d/5m -> slice last 24h
+    1D  : 2d/5m  -> slice last 24h
     1W  : 21d/30m -> slice last 7d
-    1M  : 60d/60m -> slice last 30d  (hourly)
+    1M  : 60d/60m -> slice last 30d (hourly)
     6M  : 6mo/1d
     1Y  : 1y/1d
     3Y  : 3y/1wk
@@ -87,7 +88,7 @@ def fetch_series_for_chart(ticker: str, period_label: str) -> pd.Series | None:
 
         if period_label == "1 Month":
             s = _try_dl(ticker, "60d", "60m")
-            return _slice_last(s, "30d")  # hourly already
+            return _slice_last(s, "30d")
 
         if period_label == "6 Months":
             return _clean_series(_try_dl(ticker, "6mo", "1d"))
@@ -101,15 +102,7 @@ def fetch_series_for_chart(ticker: str, period_label: str) -> pd.Series | None:
         return None
     return None
 
-def session_rangebreaks(hide_afterhours: bool):
-    # Always hide weekends; optionally hide non‑US trading hours.
-    rbs = [dict(bounds=["sat", "mon"])]
-    if hide_afterhours:
-        # Hide 16:00–09:30 (approx US equities). Keeps intraday lines clean.
-        rbs.append(dict(pattern="hour", bounds=[16, 9.5]))
-    return rbs
-
-# Simple-mode (matches your original approach) if robust path yields nothing.
+# Simple fallback (like your original)
 SIMPLE_MAP = {
     "1 Day":   ("1d",  "5m"),
     "1 Week":  ("5d",  "30m"),
@@ -118,7 +111,6 @@ SIMPLE_MAP = {
     "1 Year":  ("1y",  "1d"),
     "3 Years": ("3y",  "1wk"),
 }
-
 def simple_fetch_series(ticker: str, period_label: str) -> pd.Series | None:
     period, interval = SIMPLE_MAP[period_label]
     try:
@@ -128,6 +120,20 @@ def simple_fetch_series(ticker: str, period_label: str) -> pd.Series | None:
     except Exception:
         pass
     return None
+
+def intraday_rangebreaks():
+    """
+    Compress non-trading time for US stocks using UTC hours.
+    US regular session ≈ 13:30–20:00 UTC (9:30–16:00 ET).
+    Skip 20:00→13:30 and weekends.
+    """
+    return [
+        dict(bounds=["sat", "mon"]),            # skip weekends
+        dict(pattern="hour", bounds=[20, 13.5]) # skip 20:00–13:30 UTC
+    ]
+
+def is_intraday(label: str) -> bool:
+    return label in {"1 Day", "1 Week", "1 Month"}
 
 # ========= Header =========
 st.title("Stock Quick View")
@@ -179,7 +185,7 @@ if st.session_state.show_details:
         except Exception as e:
             st.error(f"Error loading details: {e}")
 
-# ========= Chart (same UI; robust + simple fallback) =========
+# ========= Chart =========
 if st.session_state.show_chart:
     if not tickers:
         st.warning("Please enter at least one ticker.")
@@ -191,15 +197,12 @@ if st.session_state.show_chart:
             index=2
         )
         use_normalized = st.checkbox("Normalize (start = 100)", value=True)
-        hide_afterhours = st.checkbox("Hide non‑trading hours (US)", value=True,
-                                      help="Skips evenings to remove flat lines. Turn off for raw timeline.")
 
-        # fetch data
+        # fetch data with robust -> fallback
         price_data, empties = {}, []
         for t in tickers:
             s = fetch_series_for_chart(t, period_label)
             if s is None or s.empty:
-                # fallback to simple approach
                 s = simple_fetch_series(t, period_label)
             if s is not None and not s.empty:
                 price_data[t] = s
@@ -220,7 +223,7 @@ if st.session_state.show_chart:
                 s = price_data[t].astype(float)
                 y = (s / s.iloc[0] * 100.0) if use_normalized else s
                 pct = (s.iloc[-1] / s.iloc[0] - 1.0) * 100.0
-                name = f"{t} ({pct:+.2f}%)"  # legend shows return
+                name = f"{t} ({pct:+.2f}%)"
 
                 ymin, ymax = float(y.min()), float(y.max())
                 y_min = ymin if y_min is None else min(y_min, ymin)
@@ -228,23 +231,25 @@ if st.session_state.show_chart:
 
                 fig.add_trace(go.Scatter(
                     x=y.index, y=y.values, mode="lines", name=name,
-                    hovertemplate=(
-                        f"{t}<br>Date: %{{x|%Y-%m-%d %H:%M}}<br>"
-                        f"{'Norm ' if use_normalized else ''}Price: %{{y:.2f}}<extra></extra>"
-                    )))
+                    hovertemplate=f"{t}<br>Date: %{{x|%Y-%m-%d %H:%M}}<br>"
+                                  f"{'Norm ' if use_normalized else ''}Price: %{{y:.2f}}"
+                                  "<extra></extra>"
+                ))
 
-            fig.update_layout(
+            layout_kwargs = dict(
                 height=500,
                 template="plotly_white",
                 hovermode="x unified",
                 xaxis_title="Time",
                 yaxis_title="Normalized" if use_normalized else "Price",
                 margin=dict(t=30, b=40, l=20, r=20),
-                xaxis=dict(
-                    tickangle=-45,
-                    rangebreaks=session_rangebreaks(hide_afterhours)
-                )
+                xaxis=dict(tickangle=-45)
             )
+            # Only compress off-hours on intraday charts
+            if is_intraday(period_label):
+                layout_kwargs["xaxis"]["rangebreaks"] = intraday_rangebreaks()
+
+            fig.update_layout(**layout_kwargs)
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No chart data to display.")
