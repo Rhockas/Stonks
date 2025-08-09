@@ -1,163 +1,128 @@
-# import streamlit as st
-# import pandas as pd
-# from Stocks import stock_df  # assuming stock_df(tickers: list) already defined
-
-# st.set_page_config(layout="wide")
-# st.title("Stock Analysis App")
-
-# # Input tickers
-# tickers_input = st.text_input("Enter tickers (comma-separated):", "GOOGL, ASML, TSLA")
-# tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
-
-
-# def color_final_score(val):
-#     if isinstance(val, str) and val.endswith('%'):
-#         try:
-#             score = float(val.replace('%', ''))
-#             if score < 20:
-#                 return 'background-color: #8B0000; color: white'
-#             elif score < 40:
-#                 return 'background-color: #FF6347; color: white'
-#             elif score < 60:
-#                 return 'background-color: #FFD700; color: black'
-#             elif score < 80:
-#                 return 'background-color: #9ACD32; color: black'
-#             else:
-#                 return 'background-color: #228B22; color: white'
-#         except:
-#             return ''
-#     return ''
-
-
-# if st.button("Analyze"):
-#     if tickers:
-#         df = stock_df(tickers)
-
-#         styled_df = df.style.format(precision=2)
-
-#         if "Final Score" in df.columns:
-#             styled_df = styled_df.map(color_final_score, subset=["Final Score"])
-
-#         st.dataframe(styled_df, use_container_width=True)
-#     else:
-#         st.warning("Please enter at least one ticker.")
-
-
-
+# App.py
 import streamlit as st
 import pandas as pd
-from Stocks import stock_df, method_df
+import numpy as np
 import yfinance as yf
 import plotly.graph_objs as go
 
-st.set_page_config(layout="wide")
-st.title("Stock Analysis App")
+from Stocks import stock_df, stock_data, peter_lynch, personal_model
 
-# --- Inputs ---
-tickers_input = st.text_input("Enter tickers (comma-separated):", "GOOGL, ASML, AAPL, MSFT, TSLA")
+st.set_page_config(layout="wide", page_title="Stock Quick View")
+
+# ========= Helpers =========
+@st.cache_data(ttl=3600)
+def load_quick_view(path="quick_view.csv"):
+    df = pd.read_csv(path)
+    # nicer display: fill NaN with empty, keep 2dp for numbers
+    num_cols = df.select_dtypes(include=[np.number]).columns
+    df[num_cols] = df[num_cols].round(2)
+    return df.fillna("")
+
+def compute_scores(tickers):
+    """Return DataFrame with Peter Lynch & Personal Model scores for given tickers."""
+    rows = []
+    for t in tickers:
+        try:
+            d = stock_data(t)         # one call per ticker (manual lookup only)
+            rows.append({
+                "Ticker": d.get("ticker", t),
+                "Peter Lynch": peter_lynch(d),
+                "Personal Model": personal_model(d),
+            })
+        except Exception:
+            # Skip bad tickers quietly
+            continue
+    return pd.DataFrame(rows)
+
+def intraday_15m_series(ticker):
+    """15m bars for today; fallback to last trading day from 5d window."""
+    df = yf.download(tickers=ticker, period="1d", interval="15m", auto_adjust=True, progress=False)
+    if df is not None and not df.empty:
+        return df["Close"]
+    df5 = yf.download(tickers=ticker, period="5d", interval="15m", auto_adjust=True, progress=False)
+    if df5 is None or df5.empty:
+        return None
+    last_day = df5.index.normalize()[-1]
+    return df5.loc[df5.index.normalize() == last_day, "Close"]
+
+# ========= Header =========
+st.title("Stock Quick View")
+
+# ========= Quick View Table =========
+st.subheader("Quick View (sortable)")
+quick_df = load_quick_view()
+st.dataframe(quick_df, use_container_width=True)
+
+st.markdown("---")
+
+# ========= Manual Ticker Lookup =========
+st.subheader("Lookup: type tickers")
+tickers_input = st.text_input("Enter tickers (comma-separated):", "AAPL, MSFT, TSLA")
 tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
-analyze = st.button("🔍 Analyze")
 
-# --- Stock Price Chart ---
-st.subheader("Stock Price Chart")
+colA, colB = st.columns(2)
+go_btn = colA.button("🔍 Get Details")
+chart_btn = colB.button("📈 Show Intraday (15m)")
 
-# --- Period selection ---
-period_map = {
-    "1 Day": "1d",
-    "1 Week": "5d",
-    "1 Month": "1mo",
-    "6 Months": "6mo",
-    "1 Year": "1y"
-}
-selected_period_label = st.selectbox("Select time period:", list(period_map.keys()))
-selected_period = period_map[selected_period_label]
+# --- Details (stock_df + Peter Lynch + Personal Model) ---
+if go_btn:
+    if not tickers:
+        st.warning("Please enter at least one ticker.")
+    else:
+        try:
+            df_metrics = stock_df(tickers).copy()  # your existing function
+            # Ensure Ticker is present and upper-case for merging
+            if "Ticker" not in df_metrics.columns:
+                # your stock_df returns Title-cased keys; make sure it has Ticker
+                df_metrics.rename(columns={"Ticker": "Ticker"}, inplace=True)
+            df_metrics["Ticker"] = df_metrics["Ticker"].astype(str).str.upper()
 
-# --- Toggle for raw vs normalized ---
-use_normalized = st.checkbox("Normalize prices (start from 100)", value=True)
+            df_scores = compute_scores(tickers)
+            if not df_scores.empty:
+                out = df_metrics.merge(df_scores, on="Ticker", how="left")
+            else:
+                out = df_metrics
 
-# --- Download historical data for each ticker ---
-price_data = {}
-for ticker in tickers:
-    try:
-        df = yf.Ticker(ticker).history(period=selected_period)
-        if not df.empty:
-            price_data[ticker] = df["Close"]
-    except Exception as e:
-        st.warning(f"Couldn't load data for {ticker}: {e}")
+            # round numeric cols to 2dp for display
+            num_cols = out.select_dtypes(include=[np.number]).columns
+            out[num_cols] = out[num_cols].round(2)
 
-# --- Multiselect filter ---
-available_tickers = list(price_data.keys())
-selected_tickers = st.multiselect(
-    "Select tickers to show in chart:",
-    options=available_tickers,
-    default=available_tickers
-)
+            st.write("**Financial Metrics + Scores**")
+            st.dataframe(out, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error loading details: {e}")
 
-# --- Plot chart ---
-if selected_tickers:
-    fig = go.Figure()
-    y_min, y_max = float('inf'), float('-inf')
+# --- Intraday Chart (15m bars, last trading day) ---
+if chart_btn:
+    if not tickers:
+        st.warning("Please enter at least one ticker.")
+    else:
+        st.subheader("Intraday (15m) – last trading day")
+        normalize = st.checkbox("Normalize (start = 100)", value=True, key="norm_intraday")
+        fig = go.Figure()
+        shown = 0
 
-    for ticker in selected_tickers:
-        series = price_data[ticker]
-        y_series = series / series.iloc[0] * 100 if use_normalized else series
-        y_min = min(y_min, y_series.min())
-        y_max = max(y_max, y_series.max())
+        for t in tickers:
+            try:
+                s = intraday_15m_series(t)
+                if s is None or s.empty:
+                    st.info(f"{t}: no intraday data available.")
+                    continue
+                y = s / s.iloc[0] * 100 if normalize else s
+                fig.add_trace(go.Scatter(x=y.index, y=y.values, mode="lines", name=t))
+                shown += 1
+            except Exception as e:
+                st.info(f"{t}: failed to load intraday data ({e})")
 
-        fig.add_trace(go.Scatter(
-            x=y_series.index,
-            y=y_series.values,
-            mode='lines',
-            name=ticker,
-            hovertemplate = (
-                f"{ticker}<br>"
-                "Date: %{x|%Y-%m-%d}<br>"
-                + ("Norm " if use_normalized else "")
-                + "Price: %{y:.2f}<extra></extra>"
-                            )
-        ))
-
-    # --- Dynamic gridlines ---
-    y_range = y_max - y_min
-    tick_spacing = max(round(y_range / 10), 1)
-    tick_start = int(y_min // tick_spacing * tick_spacing)
-    tick_end = int(y_max // tick_spacing * tick_spacing + tick_spacing)
-    tick_vals = list(range(tick_start, tick_end + 1, tick_spacing))
-
-    fig.update_layout(
-        height=500,
-        margin=dict(t=40, b=40, l=20, r=20),
-        xaxis_title="Date",
-        yaxis_title="Normalized Price" if use_normalized else "Raw Price",
-        yaxis=dict(
-            gridcolor='rgba(200,200,200,0.5)',
-            gridwidth=1,
-            griddash='dot',
-            tickvals=tick_vals,
-            showgrid=True
-        ),
-        xaxis=dict(tickangle=-90),
-        hovermode="x unified",
-        template="plotly_white"
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("No tickers selected for chart display.")
-
-# --- Analysis Tables ---
-if analyze and tickers:
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("Stock Financial Metrics")
-        df_metrics = stock_df(tickers)
-        st.dataframe(df_metrics, use_container_width=True)
-
-    with col2:
-        st.subheader("Valuation Models")
-        df_methods = method_df(tickers)
-        st.dataframe(df_methods, use_container_width=True)
-
-elif analyze:
-    st.warning("Please enter at least one ticker.")
+        if shown:
+            fig.update_layout(
+                height=450,
+                template="plotly_white",
+                hovermode="x unified",
+                xaxis_title="Time",
+                yaxis_title="Normalized" if normalize else "Price",
+                margin=dict(t=30, b=40, l=20, r=20),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No intraday data to display.")

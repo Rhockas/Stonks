@@ -3,6 +3,15 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 
+def _num(x):
+    # helper to coerce to float safely
+    try:
+        from math import isfinite
+        v = float(x)
+        return v if isfinite(v) else None
+    except:
+        return None
+
 def stock_data(ticker):
     stock = yf.Ticker(ticker)
     info = stock.info
@@ -10,63 +19,78 @@ def stock_data(ticker):
     q_fin = stock.quarterly_financials
     q_bs = stock.quarterly_balance_sheet
 
+    # --- Revenue growth (same structure as your original) ---
     try:
         rev_annual = fin.loc["Total Revenue"].sort_index(ascending=True)
-        latest_rev = rev_annual.iloc[-1]
-        y3to4_years_ago_rev = rev_annual.iloc[-4]
-        days_elapsed = (pd.Timestamp.today() - pd.Timestamp(year=pd.Timestamp.today().year, month=1, day=1)).days
-        n_years = 3 + days_elapsed / 365.25
-        cagr = ((latest_rev / y3to4_years_ago_rev) ** (1/n_years) - 1) * 100
-        growth_3to4y = ((latest_rev / y3to4_years_ago_rev) - 1) * 100
-    except:
+        rev_annual = pd.to_numeric(rev_annual, errors="coerce").dropna()
+        if len(rev_annual) >= 4:
+            latest_rev = rev_annual.iloc[-1]
+            past_rev = rev_annual.iloc[-4]
+            if past_rev and past_rev != 0:
+                days_elapsed = (pd.Timestamp.today() - pd.Timestamp(year=pd.Timestamp.today().year, month=1, day=1)).days
+                n_years = 3 + days_elapsed / 365.25
+                cagr = ((latest_rev / past_rev) ** (1 / n_years) - 1) * 100
+                growth_3to4y = ((latest_rev / past_rev) - 1) * 100
+            else:
+                cagr = growth_3to4y = 0
+        else:
+            cagr = growth_3to4y = 0
+    except Exception:
         cagr = growth_3to4y = 0
 
+    # --- EBIT TTM ---
     try:
-        ebit_ttm = q_fin.loc["EBIT"].iloc[:4].sum()
-    except:
+        ebit_series = q_fin.loc["EBIT"].iloc[:4]
+        ebit_ttm = pd.to_numeric(ebit_series, errors="coerce").fillna(0).sum()
+        if ebit_ttm == 0:
+            ebit_ttm = None
+    except Exception:
         ebit_ttm = None
 
+    # --- Invested Capital ---
     try:
-        invested_capital = q_bs.loc["Invested Capital"].iloc[0]
-    except:
+        invested_capital = _num(q_bs.loc["Invested Capital"].iloc[0])
+    except Exception:
         invested_capital = None
 
-    pe = info.get('trailingPE')
-    peg = info.get('trailingPegRatio')
-    growth = (pe / peg) if peg and peg > 0 and pe else 0
+    # --- Ratios / growth ---
+    pe  = _num(info.get("trailingPE"))
+    peg = _num(info.get("trailingPegRatio"))
+    growth = (pe / peg) if (pe is not None and peg is not None and peg > 0) else 0
 
     try:
-        roic = ebit_ttm / invested_capital if ebit_ttm and invested_capital else None
-    except:
+        roic = (ebit_ttm / invested_capital) if (ebit_ttm is not None and invested_capital and invested_capital != 0) else None
+    except Exception:
         roic = None
 
     return {
-        'short_name': info.get('shortName'),
-        'ticker': ticker.upper(),
-        'price': info.get('currentPrice'),
-        'pe_ratio': pe,
-        'peg_ratio': peg,
-        'eps_ttm': info.get('trailingEps'),
-        'Total Revenue': info.get('totalRevenue'),
-        'growth': growth,
-        '3-4 Year Sales Growth': growth_3to4y,
-        'CAGR': cagr,
-        'EBIT': ebit_ttm,
-        'enterprise_value': info.get("enterpriseValue"),
-        'invested_capital': invested_capital,
+        "short_name": info.get("shortName"),
+        "ticker": ticker.upper(),
+        "price": _num(info.get("currentPrice")),
+        "pe_ratio": pe,
+        "peg_ratio": peg,
+        "eps_ttm": _num(info.get("trailingEps")),
+        "Total Revenue": _num(info.get("totalRevenue")),
+        "growth": growth,
+        "3-4 Year Sales Growth": growth_3to4y,
+        "CAGR": cagr,
+        "EBIT": ebit_ttm,
+        "enterprise_value": _num(info.get("enterpriseValue")),
+        "invested_capital": invested_capital,
         "ROIC": roic,
-        'dividendYield': info.get("dividendYield"),
-        'dividend_yield%': info.get("trailingAnnualDividendYield"),
-        'earnings_growth': info.get('earningsQuarterlyGrowth'),
-        'roe': info.get('returnOnEquity'),
-        'roa': info.get('returnOnAssets'),
-        'debt_to_equity': (info.get('debtToEquity') or 0) * 0.01,
-        'pb_ratio': info.get('priceToBook'),
-        'free_cash_flow': info.get('freeCashflow'),
-        'market_cap': info.get('marketCap'),
-        'rev_growth': info.get("revenueGrowth"),
-        'sector': info.get('sector')
+        "dividendYield": _num(info.get("dividendYield")),
+        "dividend_yield%": _num(info.get("trailingAnnualDividendYield")),
+        "earnings_growth": _num(info.get("earningsQuarterlyGrowth")),
+        "roe": _num(info.get("returnOnEquity")),
+        "roa": _num(info.get("returnOnAssets")),
+        "debt_to_equity": (_num(info.get("debtToEquity")) or 0) * 0.01,
+        "pb_ratio": _num(info.get("priceToBook")),
+        "free_cash_flow": _num(info.get("freeCashflow")),
+        "market_cap": _num(info.get("marketCap")),
+        "rev_growth": _num(info.get("revenueGrowth")),
+        "sector": info.get("sector"),
     }
+
 
 def safe_compare(val, threshold, comp='>='):
     if val is None:
@@ -179,6 +203,7 @@ def method_df(tickers):
 
         row = {
             "Ticker": data["ticker"],
+            'Name': data["short_name"],
             "Peter Lynch": pl_score,
             "Warren Buffett": scores[0],
             "Philip Fisher": scores[1],
@@ -202,3 +227,5 @@ stock_df([
 method_df(["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "META", "NVDA", "NFLX"])
 
 
+
+# %%
