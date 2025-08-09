@@ -259,7 +259,10 @@ if st.session_state.show_chart:
             # Only compress off-hours on intraday charts
             if is_intraday(period_label):
                 layout_kwargs["xaxis"]["rangebreaks"] = intraday_rangebreaks()
-
+            if selected:
+                xmin = min(price_data[t].index.min() for t in selected)
+                xmax = max(price_data[t].index.max() for t in selected)
+                fig.update_xaxes(range=[xmin, xmax])
             fig.update_layout(**layout_kwargs)
             st.plotly_chart(fig, use_container_width=True)
         else:
