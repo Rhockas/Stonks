@@ -24,6 +24,27 @@ def load_quick_view(path="quick_view.csv"):
 
 NUMERIC_COLS = ["P/E","P/B","PEG","D/E","ROIC","Dividend Yield %","1M %","1Y %"]
 
+
+def coerce_types_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure all numeric columns are real floats (not strings), so sorting & filters work.
+    Safely strips % and commas if present in CSV.
+    """
+    out = df.copy()
+    for c in NUMERIC_COLS:
+        if c in out.columns:
+            if out[c].dtype == object:
+                out[c] = (
+                    out[c]
+                    .astype(str)
+                    .str.replace('%', '', regex=False)
+                    .str.replace(',', '', regex=False)
+                    .str.strip()
+                )
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+    return out
+
+
 def _reset_filter_state(df: pd.DataFrame):
     # Strings
     st.session_state["ticker_search"] = ""
