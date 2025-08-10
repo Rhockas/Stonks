@@ -43,15 +43,22 @@ def apply_table_filters(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
+    # Reset button clears filters in session state
+    if st.button("♻ Reset filters"):
+        for key in list(st.session_state.keys()):
+            if key.endswith("_min") or key.endswith("_max") or key in {"Ticker_q", "Name_q", "Sector_filter"}:
+                del st.session_state[key]
+        st.experimental_rerun()
+
     with st.expander("🔎 Filter table", expanded=False):
         # String search for Ticker/Name
         c1, c2, c3 = st.columns([1, 2, 2], gap="small")
-        ticker_q = c1.text_input("Ticker contains", "")
-        name_q   = c2.text_input("Name contains", "")
+        ticker_q = c1.text_input("Ticker contains", "", key="Ticker_q")
+        name_q   = c2.text_input("Name contains", "", key="Name_q")
         sector_filter = []
         if "Sector" in df.columns:
             sectors = sorted([s for s in df["Sector"].dropna().unique().tolist() if s])
-            sector_filter = c3.multiselect("Sector", options=sectors, default=[])
+            sector_filter = c3.multiselect("Sector", options=sectors, default=[], key="Sector_filter")
 
         # Numeric ranges
         num_cols_present = [c for c in NUMERIC_COLS if c in df.columns]
@@ -65,7 +72,6 @@ def apply_table_filters(df: pd.DataFrame) -> pd.DataFrame:
                 a, b = st.columns(2, gap="small")
                 min_val = a.number_input(f"{col} min", value=col_min, step=0.1, format="%.2f", key=f"{col}_min")
                 max_val = b.number_input(f"{col} max", value=col_max, step=0.1, format="%.2f", key=f"{col}_max")
-                # Apply range
                 df = df[(df[col].isna()) | ((df[col] >= min_val) & (df[col] <= max_val))]
 
         # Apply string filters
