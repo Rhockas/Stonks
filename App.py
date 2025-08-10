@@ -48,7 +48,7 @@ def apply_table_filters(df: pd.DataFrame) -> pd.DataFrame:
         for key in list(st.session_state.keys()):
             if key.endswith("_min") or key.endswith("_max") or key in {"Ticker_q", "Name_q", "Sector_filter"}:
                 del st.session_state[key]
-        st.experimental_rerun()
+        st.rerun()
 
     with st.expander("🔎 Filter table", expanded=False):
         # String search for Ticker/Name
