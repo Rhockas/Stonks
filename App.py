@@ -68,60 +68,104 @@ def _ensure_filter_state(df: pd.DataFrame):
         _reset_filter_state(df)
         st.session_state["filter_state_initialized"] = True
 
-def apply_table_filters(df: pd.DataFrame) -> pd.DataFrame:
-    _ensure_filter_state(df)
-
-    with st.expander("🔎 Filter table", expanded=False):
-        # Reset button (resets widgets + table)
-        if st.button("Reset filters"):
-            _reset_filter_state(df)
+def apply_table_filters(df: pd.DataFrame, key_prefix: str = "flt_") -> pd.DataFrame:
+    # --- Reset filters ---
+    col_reset, col_pop = st.columns([1, 8])
+    with col_reset:
+        if st.button("↺ Reset filters", key=f"{key_prefix}reset"):
+            for k in list(st.session_state.keys()):
+                if k.startswith(key_prefix):
+                    del st.session_state[k]
             st.rerun()
 
-        # String search
-        st.text_input("Search Ticker", key="ticker_search")
-        st.text_input("Search Name", key="name_search")
+    # --- Compact popover with filters (Streamlit ≥1.32) ---
+    with col_pop:
+        with st.popover("🔎 Filters", use_container_width=False):
+            # top row: text filters
+            c1, c2, c3 = st.columns([1.2, 1.5, 1.2])
+            ticker_query = c1.text_input(
+                "", key=f"{key_prefix}ticker",
+                placeholder="Ticker contains…",
+                label_visibility="collapsed",
+                help="Substring match in Ticker",
+            )
+            name_query = c2.text_input(
+                "", key=f"{key_prefix}name",
+                placeholder="Name contains…",
+                label_visibility="collapsed",
+                help="Substring match in Name",
+            )
 
-        # Sector multiselect
-        sectors = sorted(df.get("Sector", pd.Series([], dtype=str)).dropna().unique().tolist())
-        st.multiselect("Sector", options=sectors, key="sector_filter")
+            # sector multi-select (only shows if present)
+            sector_vals = sorted(x for x in df.get("Sector", pd.Series()).dropna().unique())
+            sector_sel = c3.multiselect(
+                "", options=sector_vals,
+                default=st.session_state.get(f"{key_prefix}sector", []),
+                key=f"{key_prefix}sector",
+                placeholder="Sector…",
+                label_visibility="collapsed",
+            )
 
-        # Numeric ranges
-        for c in NUMERIC_COLS:
-            if c not in df.columns:
-                continue
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.write(f"**{c}**")
-            with c2:
-                st.number_input(f"Min {c}", key=f"{c}_min", value=st.session_state.get(f"{c}_min", None))
-            with c3:
-                st.number_input(f"Max {c}", key=f"{c}_max", value=st.session_state.get(f"{c}_max", None))
+            st.divider()
 
-    # ---- apply filters to df ----
+            # compact numeric range filters: two rows
+            num_groups = [
+                ("P/E", "P/B", "PEG"),
+                ("D/E", "ROIC", "Dividend Yield %"),
+            ]
+            bounds = {}
+            for row in num_groups:
+                nc1, nc2, nc3 = st.columns([1, 1, 1])
+                for col, holder, c in zip(row, ["min", "max"], [nc1, nc2]):
+                    # left/right boxes per metric in same row
+                    # ex: P/E min/max in first two columns; third column used by next metric’s min
+                    pass  # placeholder to align editor
+                # Build three compact min/max pairs
+                for colname, col in zip(row, (nc1, nc2, nc3)):
+                    left, right = col.columns([1, 1])
+                    min_v = left.number_input(
+                        "", value=None, placeholder=f"{colname} ≥",
+                        key=f"{key_prefix}{colname}_min",
+                        label_visibility="collapsed",
+                        step=0.1,
+                        format="%.4f",
+                    )
+                    max_v = right.number_input(
+                        "", value=None, placeholder=f"{colname} ≤",
+                        key=f"{key_prefix}{colname}_max",
+                        label_visibility="collapsed",
+                        step=0.1,
+                        format="%.4f",
+                    )
+                    bounds[colname] = (min_v, max_v)
+
+            # returns nothing; filters apply below
+
+    # --- Apply filters ---
     out = df.copy()
 
-    ts = st.session_state.get("ticker_search","").strip().lower()
-    if ts:
-        out = out[out["Ticker"].astype(str).str.lower().str.contains(ts, na=False)]
+    # text filters
+    tq = st.session_state.get(f"{key_prefix}ticker", "")
+    nq = st.session_state.get(f"{key_prefix}name", "")
+    if tq:
+        out = out[out["Ticker"].astype(str).str.contains(tq, case=False, na=False)]
+    if nq and "Name" in out.columns:
+        out = out[out["Name"].astype(str).str.contains(nq, case=False, na=False)]
 
-    ns = st.session_state.get("name_search","").strip().lower()
-    if ns and "Name" in out.columns:
-        out = out[out["Name"].astype(str).str.lower().str.contains(ns, na=False)]
+    # sector filter
+    sel = st.session_state.get(f"{key_prefix}sector", [])
+    if sel:
+        out = out[out["Sector"].isin(sel)]
 
-    chosen = st.session_state.get("sector_filter", [])
-    if chosen and "Sector" in out.columns:
-        out = out[out["Sector"].isin(chosen)]
-
-    for c in NUMERIC_COLS:
-        if c not in out.columns:
-            continue
-        s = pd.to_numeric(out[c], errors="coerce")
-        min_v = st.session_state.get(f"{c}_min", None)
-        max_v = st.session_state.get(f"{c}_max", None)
-        if min_v is not None:
-            out = out[s >= float(min_v)]
-        if max_v is not None:
-            out = out[s <= float(max_v)]
+    # numeric ranges
+    for colname in ["P/E", "P/B", "PEG", "D/E", "ROIC", "Dividend Yield %", "1M %", "1Y %"]:
+        if colname in out.columns and pd.api.types.is_numeric_dtype(out[colname]):
+            vmin = st.session_state.get(f"{key_prefix}{colname}_min", None)
+            vmax = st.session_state.get(f"{key_prefix}{colname}_max", None)
+            if vmin is not None:
+                out = out[out[colname] >= float(vmin)]
+            if vmax is not None:
+                out = out[out[colname] <= float(vmax)]
 
     return out
 
