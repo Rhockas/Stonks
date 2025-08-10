@@ -7,11 +7,11 @@ import yfinance as yf
 import logging
 from Stocks import peter_lynch, personal_model
 
-# Quiet yfinance logs
+# Quiet yfinance logs a bit
 yf.utils.get_yf_logger().setLevel(logging.ERROR)
 
 # ---------- Fundamentals from cache ----------
-def fundamentals_from_cache(cache):
+def fundamentals_from_cache(cache: dict) -> pd.DataFrame:
     rows = []
     for t, d in cache.items():
         if not d:
@@ -27,7 +27,8 @@ def fundamentals_from_cache(cache):
             "ROIC": d.get("ROIC"),
             "Dividend Yield %": d.get("dividend_yield%"),
         })
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    return df
 
 # ---------- Ticker sanitation ----------
 CURRENCY_CODES = {"USD","EUR","GBP","CHF","AUD","NZD","CAD","HKD","JPY","DKK","NOK","SEK","ILS"}
@@ -37,20 +38,24 @@ def _looks_like_symbol(t: str) -> bool:
         return False
     if t in CURRENCY_CODES:
         return False
-    if " " in t:
+    if " " in t:  # e.g., 'NDA FI'
         return False
     return bool(re.fullmatch(r"[A-Za-z0-9.\-\^]+", t))
 
-# ---------- % change helper (calendar offsets from last bar) ----------
+# ---------- Helpers for % change ----------
 def _pct_from_calendar_offset(close: pd.Series, *, months: int = 0, years: int = 0) -> float:
-    if close is None or len(close) < 2:
+    """
+    % change from first Close on/after (last_date - DateOffset(years, months))
+    to the last Close. 'close' should be UNADJUSTED closes (auto_adjust=False).
+    """
+    if close is None or len(close) == 0:
         return np.nan
+    # make sure index is datetime & sorted
+    if not isinstance(close.index, pd.DatetimeIndex):
+        close.index = pd.to_datetime(close.index, errors="coerce")
     close = close.dropna()
     if close.empty:
         return np.nan
-    if not isinstance(close.index, pd.DatetimeIndex):
-        close.index = pd.to_datetime(close.index, errors="coerce")
-        close = close.dropna()
     close = close[~close.index.duplicated(keep="last")].sort_index()
     if close.empty:
         return np.nan
@@ -58,123 +63,101 @@ def _pct_from_calendar_offset(close: pd.Series, *, months: int = 0, years: int =
     end_ts = close.index[-1]
     target = end_ts - pd.DateOffset(years=years, months=months)
 
+    # first index >= target; else the last index <= target
     pos = close.index.searchsorted(target, side="left")
     if pos >= len(close):
         pos = close.index.searchsorted(target, side="right") - 1
     if pos < 0:
         return np.nan
 
-    start_px = close.iloc[pos:pos+1].to_numpy()
-    end_px   = close.iloc[-1:].to_numpy()
-    if start_px.size == 0 or end_px.size == 0 or start_px[0] == 0:
+    start_val = close.iloc[pos:pos+1].to_numpy()
+    end_val   = close.iloc[-1:].to_numpy()
+    if start_val.size == 0 or end_val.size == 0 or not np.isfinite(start_val[0]) or not np.isfinite(end_val[0]) or start_val[0] == 0:
         return np.nan
-    return (end_px[0] / start_px[0] - 1.0) * 100.0
 
-# ---------- Close extraction (handles both MultiIndex layouts) ----------
+    return (end_val[0] / start_val[0] - 1.0) * 100.0
+
+def _download_batch(tickers, period="1y", interval="1d", timeout=25):
+    """Wrapper around yf.download without using raise_errors (compat)."""
+    return yf.download(
+        tickers=tickers,
+        period=period,
+        interval=interval,
+        auto_adjust=False,    # unadjusted Close to match Yahoo web % moves
+        group_by="ticker",    # multi-index when many tickers
+        threads=True,
+        progress=False,
+        timeout=timeout,
+    )
+
 def _get_close_series(df: pd.DataFrame, ticker: str) -> pd.Series | None:
+    """Return Close series for ticker from yf.download output (single or multi)."""
     if df is None or df.empty:
         return None
-
-    # Single-index (single ticker)
-    if not isinstance(df.columns, pd.MultiIndex):
-        s = df.get("Close")
-        if s is None or s.empty:
-            s = df.get("Adj Close")
+    if isinstance(df.columns, pd.MultiIndex):
+        if ticker not in set(df.columns.get_level_values(0)):
+            return None
+        s = df.get((ticker, "Close"))
         return s.dropna() if s is not None else None
+    # single ticker case
+    s = df.get("Close")
+    return s.dropna() if s is not None else None
 
-    # MultiIndex: (ticker, field) OR (field, ticker)
-    cols = df.columns
-    if (ticker, "Close") in cols:
-        return df[(ticker, "Close")].dropna()
-    if ("Close", ticker) in cols:
-        return df[("Close", ticker)].dropna()
-    if (ticker, "Adj Close") in cols:
-        return df[(ticker, "Adj Close")].dropna()
-    if ("Adj Close", ticker) in cols:
-        return df[("Adj Close", ticker)].dropna()
-    return None
-
-# ---------- Safe wrappers around yfinance ----------
-def _download_batch(tickers, period="1y", interval="1d"):
-    """Safe batch download. No raise_errors/timeout to support older yfinance."""
-    try:
-        return yf.download(
-            tickers=tickers,
-            period=period,
-            interval=interval,
-            auto_adjust=False,      # unadjusted to match Yahoo site % moves
-            group_by="ticker",      # standard multi-index layout
-            threads=True,
-            progress=False,
-        )
-    except Exception:
-        return None
-
-def _download_single(ticker, period="1y", interval="1d"):
-    """Fallback: single ticker via Ticker.history (more forgiving)."""
-    try:
-        t = yf.Ticker(ticker)
-        df = t.history(period=period, interval=interval, auto_adjust=False)
-        return df if df is not None and not df.empty else None
-    except Exception:
-        return None
-
-# ---------- Batch price changes with fallback ----------
-def price_changes_batch(tickers, batch_size=60, sleep_between=0.2):
+# ---------- Batch price changes ----------
+def price_changes_batch(tickers, batch_size=75, sleep_between=0.25) -> pd.DataFrame:
+    """
+    Compute 1M% and 1Y% using UNADJUSTED daily Close, in batches.
+    Skips bad/missing symbols quietly.
+    Returns DataFrame['Ticker','1M %','1Y %'] with float dtypes.
+    """
     tickers = [t for t in tickers if _looks_like_symbol(t)]
     out_rows = []
 
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i:i+batch_size]
+        try:
+            data = _download_batch(batch, period="1y", interval="1d", timeout=25)
+        except Exception:
+            time.sleep(sleep_between)
+            continue
 
-        # 1) Batched call
-        data = _download_batch(batch)
+        # Figure out which symbols actually came back
+        present = set()
+        if isinstance(data, pd.DataFrame) and isinstance(data.columns, pd.MultiIndex):
+            present = set(data.columns.get_level_values(0))
+        elif isinstance(data, pd.DataFrame) and "Close" in data.columns and len(batch) == 1:
+            present = {batch[0]}
 
-        found = set()
-        if data is not None and not data.empty:
-            for t in batch:
-                try:
-                    close = _get_close_series(data, t)
-                    if close is None or close.empty:
-                        continue
-                    r_1m = _pct_from_calendar_offset(close, months=1)
-                    r_1y = _pct_from_calendar_offset(close, years=1)
-                    out_rows.append({
-                        "Ticker": t,
-                        "1M %": None if np.isnan(r_1m) else round(r_1m, 2),
-                        "1Y %": None if np.isnan(r_1y) else round(r_1y, 2),
-                    })
-                    found.add(t)
-                except Exception:
+        for t in present:
+            try:
+                close = _get_close_series(data, t)
+                if close is None or close.empty:
                     continue
 
-        # 2) Fallback only for batched misses
-        for t in (t for t in batch if t not in found):
-            df = _download_single(t)
-            if df is None or df.empty:
-                time.sleep(0.03)
+                r_1m = _pct_from_calendar_offset(close, months=1)
+                r_1y = _pct_from_calendar_offset(close, years=1)
+
+                out_rows.append({
+                    "Ticker": t,
+                    "1M %": np.nan if np.isnan(r_1m) else float(round(r_1m, 2)),
+                    "1Y %": np.nan if np.isnan(r_1y) else float(round(r_1y, 2)),
+                })
+            except Exception:
                 continue
-            close = _get_close_series(df, t)  # works for single-index too
-            if close is None or close.empty:
-                time.sleep(0.03)
-                continue
-            r_1m = _pct_from_calendar_offset(close, months=1)
-            r_1y = _pct_from_calendar_offset(close, years=1)
-            out_rows.append({
-                "Ticker": t,
-                "1M %": None if np.isnan(r_1m) else round(r_1m, 2),
-                "1Y %": None if np.isnan(r_1y) else round(r_1y, 2),
-            })
-            time.sleep(0.03)
 
         time.sleep(sleep_between)
 
     if not out_rows:
-        return pd.DataFrame(columns=["Ticker", "1M %", "1Y %"])
-    return pd.DataFrame(out_rows, columns=["Ticker", "1M %", "1Y %"])
+        return pd.DataFrame(columns=["Ticker", "1M %", "1Y %"]).astype({"Ticker": "string", "1M %": "float64", "1Y %": "float64"})
+    df = pd.DataFrame(out_rows, columns=["Ticker", "1M %", "1Y %"])
+    # Ensure dtypes
+    df["Ticker"] = df["Ticker"].astype("string")
+    df["1M %"] = pd.to_numeric(df["1M %"], errors="coerce")
+    df["1Y %"] = pd.to_numeric(df["1Y %"], errors="coerce")
+    return df
 
 # ---------- Scores ----------
-def scores_from_cache(cache):
+def scores_from_cache(cache: dict) -> pd.DataFrame:
     rows = []
     for t, d in cache.items():
         if not d:
@@ -184,27 +167,50 @@ def scores_from_cache(cache):
             "Peter Lynch": peter_lynch(d),
             "Personal Model": personal_model(d),
         })
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    # enforce numeric types for scores
+    for c in ("Peter Lynch", "Personal Model"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    if "Ticker" in df.columns:
+        df["Ticker"] = df["Ticker"].astype("string")
+    return df
 
-# ---------- Public builder ----------
-def build_quick_table(cache):
+# ---------- Build table (data only) ----------
+NUMERIC_COLS = ["P/E","P/B","PEG","D/E","ROIC","Dividend Yield %","1M %","1Y %","Peter Lynch","Personal Model"]
+
+def _enforce_numeric(df: pd.DataFrame) -> pd.DataFrame:
+    """Force known numeric columns to real numeric dtypes; leave strings as strings."""
+    for c in NUMERIC_COLS:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    if "Ticker" in df.columns:
+        df["Ticker"] = df["Ticker"].astype("string")
+    if "Name" in df.columns:
+        df["Name"] = df["Name"].astype("string")
+    if "Sector" in df.columns:
+        df["Sector"] = df["Sector"].astype("string")
+    return df
+
+def build_quick_table(cache: dict) -> pd.DataFrame:
     fundamentals = fundamentals_from_cache(cache)
-    tickers = sorted(set(fundamentals["Ticker"].dropna()) & set(cache.keys()))
+    fundamentals = _enforce_numeric(fundamentals)
+
+    tickers = sorted(set(fundamentals["Ticker"].dropna().astype(str)) & set(cache.keys()))
     rets = price_changes_batch(tickers)
-    if rets is None or rets.empty:
-        rets = pd.DataFrame(columns=["Ticker", "1M %", "1Y %"])
     scores = scores_from_cache(cache)
 
-    table = (
-        fundamentals
-        .merge(rets, on="Ticker", how="left")
-        .merge(scores, on="Ticker", how="left")
-    )
+    table = (fundamentals
+             .merge(rets, on="Ticker", how="left")
+             .merge(scores, on="Ticker", how="left"))
 
-    cols = ["Ticker","Name","Sector","P/E","P/B","PEG","D/E","ROIC",
-            "Dividend Yield %","1M %","1Y %","Peter Lynch","Personal Model"]
+    # Final column order
+    cols = ["Ticker","Name","Sector","P/E","P/B","PEG","D/E","ROIC","Dividend Yield %","1M %","1Y %","Peter Lynch","Personal Model"]
     table = table.reindex(columns=cols)
 
-    num_cols = table.select_dtypes(include=[np.number]).columns
-    table[num_cols] = table[num_cols].round(2)
+    # Keep numeric as numeric (round without casting to string)
+    for c in NUMERIC_COLS:
+        if c in table.columns:
+            table[c] = table[c].round(2)
+
     return table

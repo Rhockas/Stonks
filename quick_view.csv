@@ -640,7 +640,7 @@ PPL.TO,PEMBINA PIPELINE CORPORATION,Energy,15.98,1.67,,0.78,0.11,0.05,-2.34,-7.7
 9020.T,EAST JAPAN RAILWAY CO,Industrials,17.73,1.37,11.98,1.59,0.02,0.02,11.37,35.52,0.17,25.0
 4578.T,OTSUKA HLDGS CO LTD,Healthcare,10.26,1.52,,0.08,0.03,0.02,17.96,2.76,0.0,62.5
 SW,Smurfit WestRock plc,Consumer Cyclical,167.81,1.24,0.37,0.78,0.04,0.0,-7.41,11.99,5.45,25.0
-CAP,,,,,,0.0,,,,,0.0,12.5
+CAP,,,,,,0.0,,,0.0,0.0,0.0,12.5
 QBE.AX,QBE INSUR. FPO [QBE],Financial Services,10.49,3.0,,0.27,,0.0,-5.44,30.99,0.0,37.5
 ML,,,,,,0.0,,,,,0.0,12.5
 BRO,"Brown & Brown, Inc.",Financial Services,26.99,2.67,,0.67,0.08,0.01,-12.68,-6.65,0.0,25.0
@@ -1204,7 +1204,7 @@ CAD.TO,,,,,,0.0,,,,,0.0,12.5
 APA.AX,APA GROUP STAPLED [APA],Utilities,,4.01,,5.17,,0.07,3.12,9.83,0.0,12.5
 VER,,,,,,0.0,,,,,0.0,12.5
 INDT.ST,Indutrade AB,Industrials,31.84,5.27,,0.6,0.24,0.01,-12.16,-22.04,0.0,50.0
-REC,Emles Real Estate Credit ETF,,,,,0.0,,,,,0.0,12.5
+REC,Emles Real Estate Credit ETF,,,,,0.0,,,0.0,0.0,0.0,12.5
 ACI,"Albertsons Companies, Inc.",Consumer Defensive,12.02,3.45,1.97,4.44,0.14,0.03,-11.06,1.03,1.02,75.0
 AIA.NZ,Auckland International Airport ,Industrials,191.0,1.28,,0.25,,0.02,1.06,3.24,0.0,25.0
 DCC.L,DCC PLC ORD EUR0.25 (CDI),Energy,22.4,152.18,,0.73,,0.0,-0.8,-8.85,0.0,12.5

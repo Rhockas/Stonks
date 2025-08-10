@@ -5,6 +5,8 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objs as go
 
+# NOTE: we do NOT import filter_dataframe anymore (we handle filters in-app)
+# from main_table import build_quick_table
 from Stocks import stock_df, stock_data, peter_lynch, personal_model
 
 st.set_page_config(layout="wide", page_title="Stock Quick View")
@@ -19,6 +21,62 @@ if "show_chart" not in st.session_state:
 @st.cache_data(ttl=3600)
 def load_quick_view(path="quick_view.csv"):
     return pd.read_csv(path)
+
+NUMERIC_COLS = [
+    "P/E","P/B","PEG","D/E","ROIC","Dividend Yield %",
+    "1M %","1Y %","Peter Lynch","Personal Model"
+]
+
+def coerce_types_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep numeric cols as real numbers (for sorting) and tidy up strings."""
+    out = df.copy()
+    for c in NUMERIC_COLS:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+    for c in ("Ticker", "Name", "Sector"):
+        if c in out.columns:
+            out[c] = out[c].astype("string")
+    return out
+
+def apply_table_filters(df: pd.DataFrame) -> pd.DataFrame:
+    """Interactive filters: sector multiselect, string contains, numeric min/max."""
+    if df.empty:
+        return df
+
+    with st.expander("🔎 Filter table", expanded=False):
+        # String search for Ticker/Name
+        c1, c2, c3 = st.columns([1, 2, 2], gap="small")
+        ticker_q = c1.text_input("Ticker contains", "")
+        name_q   = c2.text_input("Name contains", "")
+        sector_filter = []
+        if "Sector" in df.columns:
+            sectors = sorted([s for s in df["Sector"].dropna().unique().tolist() if s])
+            sector_filter = c3.multiselect("Sector", options=sectors, default=[])
+
+        # Numeric ranges
+        num_cols_present = [c for c in NUMERIC_COLS if c in df.columns]
+        if num_cols_present:
+            st.markdown("**Numeric filters**")
+            for col in num_cols_present:
+                col_min = float(np.nanmin(df[col])) if df[col].notna().any() else None
+                col_max = float(np.nanmax(df[col])) if df[col].notna().any() else None
+                if col_min is None or col_max is None or not np.isfinite(col_min) or not np.isfinite(col_max):
+                    continue
+                a, b = st.columns(2, gap="small")
+                min_val = a.number_input(f"{col} min", value=col_min, step=0.1, format="%.2f", key=f"{col}_min")
+                max_val = b.number_input(f"{col} max", value=col_max, step=0.1, format="%.2f", key=f"{col}_max")
+                # Apply range
+                df = df[(df[col].isna()) | ((df[col] >= min_val) & (df[col] <= max_val))]
+
+        # Apply string filters
+        if ticker_q:
+            df = df[df["Ticker"].str.contains(ticker_q, case=False, na=False)]
+        if name_q and "Name" in df.columns:
+            df = df[df["Name"].str.contains(name_q, case=False, na=False)]
+        if sector_filter:
+            df = df[df["Sector"].isin(sector_filter)]
+
+    return df
 
 # ========= Score helper for details =========
 def compute_scores(tickers):
@@ -72,7 +130,7 @@ def fetch_series_for_chart(ticker: str, period_label: str) -> pd.Series | None:
     """
     1D  : 2d/5m  -> slice last 24h
     1W  : 21d/30m -> slice last 7d
-    1M  : 60d/60m -> slice last 30d (hourly)
+    1M  : 60d/60m -> slice last 30d (hourly), exact calendar month clipped
     6M  : 6mo/1d
     1Y  : 1y/1d
     3Y  : 3y/1wk
@@ -88,7 +146,9 @@ def fetch_series_for_chart(ticker: str, period_label: str) -> pd.Series | None:
 
         if period_label == "1 Month":
             # try intraday first
-            s = _try_dl(ticker, "60d", "60m") or _try_dl(ticker, "30d", "60m") or _try_dl(ticker, "60d", "90m")
+            s = (_try_dl(ticker, "60d", "60m")
+                 or _try_dl(ticker, "30d", "60m")
+                 or _try_dl(ticker, "60d", "90m"))
             if s is None or s.empty:
                 s = _try_dl(ticker, "1mo", "1d")
             if s is None:
@@ -97,7 +157,6 @@ def fetch_series_for_chart(ticker: str, period_label: str) -> pd.Series | None:
             if s is None:
                 return None
             end = s.index[-1]
-            # exact last calendar month from latest date
             start = end - pd.DateOffset(months=1)
             return _clean_series(s[(s.index >= start) & (s.index <= end)])
 
@@ -113,7 +172,6 @@ def fetch_series_for_chart(ticker: str, period_label: str) -> pd.Series | None:
         return None
     return None
 
-# Simple fallback (like your original)
 SIMPLE_MAP = {
     "1 Day":   ("1d",  "5m"),
     "1 Week":  ("5d",  "30m"),
@@ -128,7 +186,6 @@ def simple_fetch_series(ticker: str, period_label: str) -> pd.Series | None:
         df = yf.Ticker(ticker).history(period=period, interval=interval)
         if df is not None and not df.empty and "Close" in df:
             s = _clean_series(df["Close"].dropna())
-            # 🔒 ensure exactly last calendar month, even in simple mode
             if period_label == "1 Month" and s is not None and not s.empty:
                 end = s.index.max()
                 start = end - pd.DateOffset(months=1)
@@ -139,11 +196,6 @@ def simple_fetch_series(ticker: str, period_label: str) -> pd.Series | None:
     return None
 
 def intraday_rangebreaks():
-    """
-    Compress non-trading time for US stocks using UTC hours.
-    US regular session ≈ 13:30–20:00 UTC (9:30–16:00 ET).
-    Skip 20:00→13:30 and weekends.
-    """
     return [
         dict(bounds=["sat", "mon"]),            # skip weekends
         dict(pattern="hour", bounds=[20, 13.5]) # skip 20:00–13:30 UTC
@@ -156,12 +208,19 @@ def is_intraday(label: str) -> bool:
 st.title("Stock Quick View")
 
 # ========= Quick View Table =========
-st.subheader("Quick View (sortable)")
+st.subheader("Quick View (sortable + filterable)")
 quick_df = load_quick_view()
-disp = quick_df.copy()
-num_cols = disp.select_dtypes(include=[np.number]).columns
-disp[num_cols] = disp[num_cols].round(2)
-disp = disp.fillna("")
+quick_df = coerce_types_for_display(quick_df)
+
+# Filters UI
+filtered_df = apply_table_filters(quick_df)
+
+# Round numeric for display only (keeps dtype float)
+num_cols_present = [c for c in NUMERIC_COLS if c in filtered_df.columns]
+disp = filtered_df.copy()
+if num_cols_present:
+    disp[num_cols_present] = disp[num_cols_present].round(2)
+
 st.dataframe(disp, use_container_width=True)
 
 st.markdown("---")
@@ -269,8 +328,7 @@ if st.session_state.show_chart:
                 end = max(price_data[t].index.max() for t in selected)
                 start = end - pd.DateOffset(months=1)
                 fig.update_xaxes(range=[start, end])
-            fig.update_layout(**layout_kwargs)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig.update_layout(**layout_kwargs), use_container_width=True)
         else:
             st.info("No chart data to display.")
 
