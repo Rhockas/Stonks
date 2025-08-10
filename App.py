@@ -22,67 +22,87 @@ if "show_chart" not in st.session_state:
 def load_quick_view(path="quick_view.csv"):
     return pd.read_csv(path)
 
-NUMERIC_COLS = [
-    "P/E","P/B","PEG","D/E","ROIC","Dividend Yield %",
-    "1M %","1Y %","Peter Lynch","Personal Model"
-]
+NUMERIC_COLS = ["P/E","P/B","PEG","D/E","ROIC","Dividend Yield %","1M %","1Y %"]
 
-def coerce_types_for_display(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep numeric cols as real numbers (for sorting) and tidy up strings."""
-    out = df.copy()
+def _reset_filter_state(df: pd.DataFrame):
+    # Strings
+    st.session_state["ticker_search"] = ""
+    st.session_state["name_search"] = ""
+    # Categorical (Sector)
+    sectors = sorted([s for s in df.get("Sector", pd.Series([], dtype=str)).dropna().unique().tolist()])
+    st.session_state["sector_filter"] = sectors
+    # Numeric ranges
     for c in NUMERIC_COLS:
-        if c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors="coerce")
-    for c in ("Ticker", "Name", "Sector"):
-        if c in out.columns:
-            out[c] = out[c].astype("string")
-    return out
+        if c in df.columns:
+            s = pd.to_numeric(df[c], errors="coerce").dropna()
+            if len(s):
+                st.session_state[f"{c}_min"] = float(np.floor(s.min()))
+                st.session_state[f"{c}_max"] = float(np.ceil(s.max()))
+            else:
+                st.session_state[f"{c}_min"] = None
+                st.session_state[f"{c}_max"] = None
+
+def _ensure_filter_state(df: pd.DataFrame):
+    if "filter_state_initialized" not in st.session_state:
+        _reset_filter_state(df)
+        st.session_state["filter_state_initialized"] = True
 
 def apply_table_filters(df: pd.DataFrame) -> pd.DataFrame:
-    """Interactive filters: sector multiselect, string contains, numeric min/max."""
-    if df.empty:
-        return df
-
-    # Reset button clears filters in session state
-    if st.button("♻ Reset filters"):
-        for key in list(st.session_state.keys()):
-            if key.endswith("_min") or key.endswith("_max") or key in {"Ticker_q", "Name_q", "Sector_filter"}:
-                del st.session_state[key]
-        st.rerun()
+    _ensure_filter_state(df)
 
     with st.expander("🔎 Filter table", expanded=False):
-        # String search for Ticker/Name
-        c1, c2, c3 = st.columns([1, 2, 2], gap="small")
-        ticker_q = c1.text_input("Ticker contains", "", key="Ticker_q")
-        name_q   = c2.text_input("Name contains", "", key="Name_q")
-        sector_filter = []
-        if "Sector" in df.columns:
-            sectors = sorted([s for s in df["Sector"].dropna().unique().tolist() if s])
-            sector_filter = c3.multiselect("Sector", options=sectors, default=[], key="Sector_filter")
+        # Reset button (resets widgets + table)
+        if st.button("Reset filters"):
+            _reset_filter_state(df)
+            st.rerun()
+
+        # String search
+        st.text_input("Search Ticker", key="ticker_search")
+        st.text_input("Search Name", key="name_search")
+
+        # Sector multiselect
+        sectors = sorted(df.get("Sector", pd.Series([], dtype=str)).dropna().unique().tolist())
+        st.multiselect("Sector", options=sectors, key="sector_filter")
 
         # Numeric ranges
-        num_cols_present = [c for c in NUMERIC_COLS if c in df.columns]
-        if num_cols_present:
-            st.markdown("**Numeric filters**")
-            for col in num_cols_present:
-                col_min = float(np.nanmin(df[col])) if df[col].notna().any() else None
-                col_max = float(np.nanmax(df[col])) if df[col].notna().any() else None
-                if col_min is None or col_max is None or not np.isfinite(col_min) or not np.isfinite(col_max):
-                    continue
-                a, b = st.columns(2, gap="small")
-                min_val = a.number_input(f"{col} min", value=col_min, step=0.1, format="%.2f", key=f"{col}_min")
-                max_val = b.number_input(f"{col} max", value=col_max, step=0.1, format="%.2f", key=f"{col}_max")
-                df = df[(df[col].isna()) | ((df[col] >= min_val) & (df[col] <= max_val))]
+        for c in NUMERIC_COLS:
+            if c not in df.columns:
+                continue
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.write(f"**{c}**")
+            with c2:
+                st.number_input(f"Min {c}", key=f"{c}_min", value=st.session_state.get(f"{c}_min", None))
+            with c3:
+                st.number_input(f"Max {c}", key=f"{c}_max", value=st.session_state.get(f"{c}_max", None))
 
-        # Apply string filters
-        if ticker_q:
-            df = df[df["Ticker"].str.contains(ticker_q, case=False, na=False)]
-        if name_q and "Name" in df.columns:
-            df = df[df["Name"].str.contains(name_q, case=False, na=False)]
-        if sector_filter:
-            df = df[df["Sector"].isin(sector_filter)]
+    # ---- apply filters to df ----
+    out = df.copy()
 
-    return df
+    ts = st.session_state.get("ticker_search","").strip().lower()
+    if ts:
+        out = out[out["Ticker"].astype(str).str.lower().str.contains(ts, na=False)]
+
+    ns = st.session_state.get("name_search","").strip().lower()
+    if ns and "Name" in out.columns:
+        out = out[out["Name"].astype(str).str.lower().str.contains(ns, na=False)]
+
+    chosen = st.session_state.get("sector_filter", [])
+    if chosen and "Sector" in out.columns:
+        out = out[out["Sector"].isin(chosen)]
+
+    for c in NUMERIC_COLS:
+        if c not in out.columns:
+            continue
+        s = pd.to_numeric(out[c], errors="coerce")
+        min_v = st.session_state.get(f"{c}_min", None)
+        max_v = st.session_state.get(f"{c}_max", None)
+        if min_v is not None:
+            out = out[s >= float(min_v)]
+        if max_v is not None:
+            out = out[s <= float(max_v)]
+
+    return out
 
 # ========= Score helper for details =========
 def compute_scores(tickers):
