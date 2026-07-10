@@ -80,7 +80,7 @@ def apply_table_filters(df: pd.DataFrame, key_prefix: str = "flt_") -> pd.DataFr
 
     # --- Compact popover with filters (Streamlit ≥1.32) ---
     with col_pop:
-        with st.popover("🔎 Filters", use_container_width=False):
+        with st.popover("🔎 Filters", width=False):
             # top row: text filters
             c1, c2, c3 = st.columns([1.2, 1.5, 1.2])
             ticker_query = c1.text_input(
@@ -312,7 +312,7 @@ disp = filtered_df.copy()
 if num_cols_present:
     disp[num_cols_present] = disp[num_cols_present].round(2)
 
-st.dataframe(disp, use_container_width=True)
+st.dataframe(disp, width=True)
 
 st.markdown("---")
 
@@ -348,7 +348,7 @@ if st.session_state.show_details:
             out[num_cols] = out[num_cols].round(2)
 
             st.write("**Financial Metrics + Scores**")
-            st.dataframe(out, use_container_width=True)
+            st.dataframe(out, width=True)
         except Exception as e:
             st.error(f"Error loading details: {e}")
 
@@ -419,7 +419,7 @@ if st.session_state.show_chart:
                 end = max(price_data[t].index.max() for t in selected)
                 start = end - pd.DateOffset(months=1)
                 fig.update_xaxes(range=[start, end])
-            st.plotly_chart(fig.update_layout(**layout_kwargs), use_container_width=True)
+            st.plotly_chart(fig.update_layout(**layout_kwargs), width=True)
         else:
             st.info("No chart data to display.")
 
