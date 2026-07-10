@@ -80,7 +80,7 @@ def apply_table_filters(df: pd.DataFrame, key_prefix: str = "flt_") -> pd.DataFr
 
     # --- Compact popover with filters (Streamlit ≥1.32) ---
     with col_pop:
-        with st.popover("🔎 Filters", width=False):
+        with st.popover("🔎 Filters"):
             # top row: text filters
             c1, c2, c3 = st.columns([1.2, 1.5, 1.2])
             ticker_query = c1.text_input(
